@@ -316,7 +316,7 @@ export default function CustomersPage() {
   function saveOrg(data: Partial<Organization>) {
     if (data.id) {
       setOrgs(prev => prev.map(o => o.id === data.id ? { ...o, ...data } : o))
-      setSelected(s => s?.id === data.id ? { ...s, ...data } : s)
+      setSelected(s => s?.id === data.id ? { ...s, ...data } as Organization : s)
     } else {
       const n: Organization = { id: Date.now().toString(), contacts: [], created_at: new Date().toISOString(), name: data.name ?? "", org_type: data.org_type ?? "New", org_format: data.org_format ?? "", province: data.province ?? "", region: data.region ?? "", health_district: data.health_district ?? 0, one_qa: data.one_qa ?? false }
       setOrgs(prev => [...prev, n])
