@@ -1,12 +1,13 @@
 "use client"
 
 import { useState } from "react"
-import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, AlertTriangle, Clock, CheckCircle2, Copy, Check, Truck, Building2, User, Hash, Calendar, MapPin, FileText, Package, Trash2 } from "lucide-react"
+import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users } from "lucide-react"
 
 type JobType = "repair" | "calibration"
 type JobStatus = "รอประเมิน" | "กำลังประเมิน" | "รอ Quotation Approve" | "รอ PO" | "ในคิว" | "กำลังซ่อม" | "รออะไหล่" | "QC" | "รอส่งคืน" | "ปิดงาน"
 type Priority = "urgent" | "high" | "normal"
 type Routing = "in_country" | "overseas"
+type MainTab = "jobs" | "from_stock" | "from_se"
 
 interface ServiceJob {
   id: string; job_no: string; job_type: JobType; status: JobStatus; priority: Priority
@@ -19,6 +20,44 @@ interface ServiceJob {
   tracking_out?: string; invoice_no?: string; warranty_days?: string
   technician?: string; created_at: string
 }
+
+// ── Dispatched job from Stock department ──────────────────────────────────────
+interface StockDispatch {
+  id: string
+  item_name: string
+  serial_number: string
+  customer_org: string
+  customer_contact: string
+  symptom: string
+  job_type: "repair" | "calibration"
+  dispatched_by: string   // Stock staff name
+  dispatched_at: string
+}
+
+// ── Service request originated by SE team ────────────────────────────────────
+interface SERequest {
+  id: string
+  customer_org: string
+  equipment: string
+  issue_description: string
+  requested_by: string   // SE person name
+  requested_at: string
+  priority: Priority
+}
+
+// ── Mock organizations (same as customers page) ────────────────────────────────
+const MOCK_ORGS = [
+  "โรงพยาบาลศิริราช",
+  "โรงพยาบาลกรุงเทพ",
+  "โรงพยาบาลมหาราชนครเชียงใหม่",
+  "โรงพยาบาลขอนแก่น",
+  "โรงพยาบาลสมิติเวช",
+  "โรงพยาบาลบำรุงราษฎร์",
+  "โรงพยาบาลรามาธิบดี",
+  "โรงพยาบาลจุฬาลงกรณ์",
+  "โรงพยาบาลพระมงกุฎเกล้า",
+  "โรงพยาบาลนครพิงค์",
+]
 
 const STATUS_FLOW: JobStatus[] = ["รอประเมิน","กำลังประเมิน","รอ Quotation Approve","รอ PO","ในคิว","กำลังซ่อม","รออะไหล่","QC","รอส่งคืน","ปิดงาน"]
 
@@ -78,6 +117,54 @@ const MOCK_JOBS: ServiceJob[] = [
     technician:"ช่างวิทยา", created_at:"2024-03-08" },
 ]
 
+// ── Mock dispatched jobs from Stock ───────────────────────────────────────────
+const MOCK_STOCK_DISPATCHES: StockDispatch[] = [
+  {
+    id: "sd1",
+    item_name: "ProSim 8 + SPOT Module",
+    serial_number: "PS8-2024-NEW-001",
+    customer_org: "โรงพยาบาลรามาธิบดี",
+    customer_contact: "นายสมชาย วงศ์ดี",
+    symptom: "เครื่องรับมาจาก Sales พบว่า Firmware ล้าสมัย ต้องอัปเดตและทดสอบ",
+    job_type: "repair",
+    dispatched_by: "Stock สมชาย",
+    dispatched_at: "2024-03-18",
+  },
+  {
+    id: "sd2",
+    item_name: "RaySafe X2 Solo",
+    serial_number: "X2S-2024-001",
+    customer_org: "โรงพยาบาลสมิติเวช",
+    customer_contact: "นางสาวพิมลพรรณ รักดี",
+    symptom: "ส่งสอบเทียบประจำปี ก่อนส่งมอบให้ลูกค้า",
+    job_type: "calibration",
+    dispatched_by: "Stock สมชาย",
+    dispatched_at: "2024-03-19",
+  },
+]
+
+// ── Mock SE requests ──────────────────────────────────────────────────────────
+const MOCK_SE_REQUESTS: SERequest[] = [
+  {
+    id: "se1",
+    customer_org: "โรงพยาบาลบำรุงราษฎร์",
+    equipment: "ESA 615 — SN: ESA615-DEMO-001",
+    issue_description: "ลูกค้าแจ้งว่าเครื่อง Demo ที่ยืมไปมีปัญหาการวัดค่า Leakage current ผิดพลาด ต้องการให้ทีมช่างตรวจสอบก่อนจะตัดสินใจซื้อ",
+    requested_by: "คุณวิภาพร (SE)",
+    requested_at: "2024-03-17",
+    priority: "high",
+  },
+  {
+    id: "se2",
+    customer_org: "โรงพยาบาลจุฬาลงกรณ์",
+    equipment: "ProSim 4 — SN: PS4-DEMO-002",
+    issue_description: "ลูกค้าต้องการสอบเทียบ ProSim 4 ตัว Demo ที่ทางโรงพยาบาลใช้อยู่ เพื่อนำผลสอบเทียบไปใช้ประกอบการขอ Budget",
+    requested_by: "คุณธนากร (SE)",
+    requested_at: "2024-03-20",
+    priority: "normal",
+  },
+]
+
 const LABS = ["สถาบันมาตรวิทยาแห่งชาติ (NIMT)","สถาบันเทคโนโลยีไทย-ญี่ปุ่น (TNI)","มจธ. ศูนย์บริการวิทยาศาสตร์","อื่นๆ"]
 const MANUFACTURERS = ["Fluke Biomedical","RaySafe","Fluke General","IMT Analytics","Omega","Testo","Other"]
 
@@ -108,6 +195,37 @@ function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolea
         <span className="text-xs text-gray-400">{job.received_date}</span>
       </div>
     </button>
+  )
+}
+
+// ── Org Select Component ──────────────────────────────────────────────────────
+function OrgSelect({ value, onChange, required, className }: { value: string; onChange: (v: string) => void; required?: boolean; className?: string }) {
+  const [custom, setCustom] = useState(!MOCK_ORGS.includes(value) && value !== "")
+  return (
+    <div className="space-y-2">
+      <select
+        value={custom ? "__custom__" : value}
+        onChange={e => {
+          if (e.target.value === "__custom__") { setCustom(true); onChange("") }
+          else { setCustom(false); onChange(e.target.value) }
+        }}
+        className={className}
+        required={!!required && !custom}
+      >
+        <option value="">-- เลือกหน่วยงาน --</option>
+        {MOCK_ORGS.map(o => <option key={o} value={o}>{o}</option>)}
+        <option value="__custom__">+ พิมพ์เอง...</option>
+      </select>
+      {custom && (
+        <input
+          required={required}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder="พิมพ์ชื่อหน่วยงาน"
+          className={className}
+        />
+      )}
+    </div>
   )
 }
 
@@ -222,11 +340,16 @@ function NewJobDialog({ onClose, onSave }: { onClose: () => void; onSave: (j: Se
               </div>
             )}
           </div>
-          {/* Customer */}
+          {/* Customer — now uses OrgSelect dropdown */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={lbl}>หน่วยงาน *</label>
-              <input required value={form.customer_org} onChange={e=>setForm(f=>({...f,customer_org:e.target.value}))} className={inp} placeholder="ชื่อโรงพยาบาล" />
+              <OrgSelect
+                value={form.customer_org}
+                onChange={v => setForm(f => ({ ...f, customer_org: v }))}
+                required
+                className={inp}
+              />
             </div>
             <div>
               <label className={lbl}>ผู้ติดต่อ</label>
@@ -320,22 +443,18 @@ function QuotationDraftDialog({ job, onClose }: { job: ServiceJob; onClose: () =
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X className="h-4 w-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* Customer */}
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">1. ชื่อลูกค้า</label>
             <input value={customerName} onChange={e=>setCustomerName(e.target.value)} className={inp} />
           </div>
-          {/* Quote Name */}
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">2. ชื่อใบเสนอราคา</label>
             <input value={quoteName} onChange={e=>setQuoteName(e.target.value)} className={inp} />
           </div>
-          {/* Equipment reference */}
           <div className="p-3 bg-gray-50 rounded-2xl text-sm text-gray-600">
             <span className="font-semibold">{job.model}</span>
             <span className="font-mono text-xs text-blue-600 ml-2">SN: {job.serial_number}</span>
           </div>
-          {/* Line Items */}
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">3. รายการ</label>
             <div className="space-y-2">
@@ -353,7 +472,6 @@ function QuotationDraftDialog({ job, onClose }: { job: ServiceJob; onClose: () =
               <span className="text-lg font-black text-gray-900">{total.toLocaleString("th-TH")} บาท</span>
             </div>
           </div>
-          {/* Internal Cost */}
           <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
             <label className="block text-xs font-bold text-amber-700 uppercase tracking-wide mb-1.5">4. ราคาต้นทุนอะไหล่ (ภายใน — ไม่ส่งลูกค้า)</label>
             <input type="number" min={0} value={costInternal||""} onChange={e=>setCostInternal(Number(e.target.value))} className="w-full px-3 py-2 rounded-xl border border-amber-200 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm" placeholder="ต้นทุนอะไหล่ บาท" />
@@ -361,7 +479,6 @@ function QuotationDraftDialog({ job, onClose }: { job: ServiceJob; onClose: () =
               <p className="text-xs text-amber-600 mt-1.5">Margin: {(((total - costInternal) / total) * 100).toFixed(1)}%</p>
             )}
           </div>
-          {/* Approval status */}
           <div className="p-4 bg-purple-50 rounded-2xl border border-purple-100">
             <p className="text-xs font-bold text-purple-700 uppercase tracking-wide mb-2">5. สถานะการ Approve</p>
             <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold ${job.quotation_approved ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
@@ -380,6 +497,128 @@ function QuotationDraftDialog({ job, onClose }: { job: ServiceJob; onClose: () =
   )
 }
 
+// ── From Stock Tab ─────────────────────────────────────────────────────────────
+function FromStockTab({
+  dispatches,
+  onAccept,
+}: {
+  dispatches: StockDispatch[]
+  onAccept: (d: StockDispatch) => void
+}) {
+  if (dispatches.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-gray-300">
+        <Inbox className="h-16 w-16 mb-3 opacity-30" />
+        <p className="text-sm">ไม่มีงานจาก Stock</p>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">งานที่ฝ่าย Stock ส่งมาให้ฝ่ายบริการดำเนินการ กรุณากด "รับงาน" เพื่อเพิ่มเข้าคิวหลัก</p>
+      {dispatches.map(d => (
+        <div key={d.id} className="bg-white rounded-3xl border border-orange-200 p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`p-1.5 rounded-lg ${d.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"}`}>
+                  {d.job_type === "repair" ? <Wrench className="h-3.5 w-3.5 text-blue-600" /> : <FlaskConical className="h-3.5 w-3.5 text-teal-600" />}
+                </span>
+                <p className="font-bold text-gray-900">{d.item_name}</p>
+              </div>
+              <p className="font-mono text-xs text-blue-600 ml-8">SN: {d.serial_number}</p>
+            </div>
+            <span className="shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-orange-100 text-orange-700">จาก Stock</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="p-3 bg-gray-50 rounded-2xl">
+              <p className="text-xs text-gray-400 mb-0.5 flex items-center gap-1"><Building2 className="h-3 w-3" /> หน่วยงาน</p>
+              <p className="text-sm font-semibold text-gray-900">{d.customer_org}</p>
+            </div>
+            <div className="p-3 bg-gray-50 rounded-2xl">
+              <p className="text-xs text-gray-400 mb-0.5 flex items-center gap-1"><User className="h-3 w-3" /> ผู้ติดต่อ</p>
+              <p className="text-sm font-semibold text-gray-900">{d.customer_contact || "—"}</p>
+            </div>
+          </div>
+          <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 mb-4">
+            <p className="text-xs text-orange-600 mb-1">อาการ / เหตุผล</p>
+            <p className="text-sm text-gray-800">{d.symptom}</p>
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-gray-400">
+              ส่งโดย <span className="font-semibold text-gray-600">{d.dispatched_by}</span> · {d.dispatched_at}
+            </div>
+            <button
+              onClick={() => onAccept(d)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-xl text-sm font-bold transition-colors"
+            >
+              <CheckCircle2 className="h-4 w-4" /> รับงาน
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── From SE Tab ────────────────────────────────────────────────────────────────
+function FromSETab({
+  requests,
+  onAccept,
+}: {
+  requests: SERequest[]
+  onAccept: (r: SERequest) => void
+}) {
+  if (requests.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-gray-300">
+        <Users className="h-16 w-16 mb-3 opacity-30" />
+        <p className="text-sm">ไม่มีคำขอจาก SE</p>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">คำขอบริการที่ทีม SE (Sales Engineering) ส่งมาให้ฝ่ายบริการ กรุณากด "รับงาน" เพื่อเพิ่มเข้าคิวหลัก</p>
+      {requests.map(r => {
+        const priorityColor = r.priority === "urgent" ? "bg-red-100 text-red-700" : r.priority === "high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-500"
+        const priorityLabel = r.priority === "urgent" ? "เร่งด่วน" : r.priority === "high" ? "สำคัญ" : "ปกติ"
+        return (
+          <div key={r.id} className="bg-white rounded-3xl border border-violet-200 p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="p-1.5 rounded-lg bg-violet-100">
+                    <Users className="h-3.5 w-3.5 text-violet-600" />
+                  </span>
+                  <p className="font-bold text-gray-900">{r.customer_org}</p>
+                </div>
+                <p className="text-xs text-gray-500 ml-8">{r.equipment}</p>
+              </div>
+              <Pill label={priorityLabel} color={priorityColor} />
+            </div>
+            <div className="p-3 bg-violet-50 rounded-2xl border border-violet-100 mb-4">
+              <p className="text-xs text-violet-600 mb-1">รายละเอียดปัญหา</p>
+              <p className="text-sm text-gray-800">{r.issue_description}</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-400">
+                ขอโดย <span className="font-semibold text-gray-600">{r.requested_by}</span> · {r.requested_at}
+              </div>
+              <button
+                onClick={() => onAccept(r)}
+                className="flex items-center gap-2 px-4 py-2 bg-violet-500 hover:bg-violet-600 text-white rounded-xl text-sm font-bold transition-colors"
+              >
+                <CheckCircle2 className="h-4 w-4" /> รับงาน
+              </button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ServiceRequestPage() {
   const [jobs, setJobs] = useState<ServiceJob[]>(MOCK_JOBS)
@@ -388,8 +627,15 @@ export default function ServiceRequestPage() {
   const [filterType, setFilterType] = useState<"all"|JobType>("all")
   const [filterStatus, setFilterStatus] = useState("ทั้งหมด")
   const [showNew, setShowNew] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [showQuoteDialog, setShowQuoteDialog] = useState(false)
+  const [mainTab, setMainTab] = useState<MainTab>("jobs")
+
+  // Stock dispatches state
+  const [stockDispatches, setStockDispatches] = useState<StockDispatch[]>(MOCK_STOCK_DISPATCHES)
+  // SE requests state
+  const [seRequests, setSERequests] = useState<SERequest[]>(MOCK_SE_REQUESTS)
+
+  const totalIncoming = stockDispatches.length + seRequests.length
 
   const filtered = jobs.filter(j => {
     const q = search.toLowerCase()
@@ -402,24 +648,81 @@ export default function ServiceRequestPage() {
     const idx = STATUS_FLOW.indexOf(job.status)
     if (idx < STATUS_FLOW.length - 1) {
       const next = STATUS_FLOW[idx + 1]
-      // Skip "รอ Quotation Approve" if not required
-      const actualNext = next === "รอ Quotation Approve" && !job.requires_approval ? STATUS_FLOW[idx + 2] : next
-      const updated = { ...job, status: actualNext }
+      const skip = next === "รอ Quotation Approve" && !job.requires_approval
+      const actualNext: JobStatus = skip ? (STATUS_FLOW[idx + 2] ?? next) : next
+      const updated: ServiceJob = { ...job, status: actualNext }
       setJobs(prev => prev.map(j => j.id === job.id ? updated : j))
       setSelected(updated)
     }
   }
 
-  function copyQuote(job: ServiceJob) {
-    const text = `เรียน ${job.customer_org}\nเรื่อง ใบเสนอราคา${job.job_type === "repair" ? "ซ่อม" : "สอบเทียบ"} ${job.model} SN: ${job.serial_number}\nอาการ: ${job.symptom_reported}\n\nราคา: ________________ บาท\n\nโปรดส่ง PO กลับมาที่ฝ่ายบริการ\nขอบคุณครับ`
-    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+  // Accept dispatched job from Stock → create a new ServiceJob
+  function acceptStockDispatch(d: StockDispatch) {
+    const count = Math.floor(Math.random() * 900) + 100
+    const newJob: ServiceJob = {
+      id: Date.now().toString(),
+      job_no: `JOB-2024-0${count}`,
+      job_type: d.job_type,
+      status: "รอประเมิน",
+      priority: "normal",
+      serial_number: d.serial_number,
+      manufacturer: "—",
+      model: d.item_name,
+      received_date: new Date().toISOString().split("T")[0],
+      tracking_in: "—",
+      receive_channel: "พนักงาน",
+      customer_name: d.customer_contact,
+      customer_org: d.customer_org,
+      routing: "in_country",
+      symptom_reported: d.symptom,
+      requires_approval: true,
+      created_at: new Date().toISOString().split("T")[0],
+    }
+    setJobs(prev => [newJob, ...prev])
+    setStockDispatches(prev => prev.filter(x => x.id !== d.id))
+    setSelected(newJob)
+    setMainTab("jobs")
+  }
+
+  // Accept SE request → create a new ServiceJob
+  function acceptSERequest(r: SERequest) {
+    const count = Math.floor(Math.random() * 900) + 100
+    const newJob: ServiceJob = {
+      id: Date.now().toString(),
+      job_no: `JOB-2024-0${count}`,
+      job_type: "repair",
+      status: "รอประเมิน",
+      priority: r.priority,
+      serial_number: r.equipment.includes("SN:") ? r.equipment.split("SN:")[1].trim() : "—",
+      manufacturer: "—",
+      model: r.equipment.split("—")[0].trim(),
+      received_date: new Date().toISOString().split("T")[0],
+      tracking_in: "—",
+      receive_channel: "พนักงาน",
+      customer_name: r.requested_by,
+      customer_org: r.customer_org,
+      routing: "in_country",
+      symptom_reported: r.issue_description,
+      requires_approval: true,
+      created_at: new Date().toISOString().split("T")[0],
+    }
+    setJobs(prev => [newJob, ...prev])
+    setSERequests(prev => prev.filter(x => x.id !== r.id))
+    setSelected(newJob)
+    setMainTab("jobs")
   }
 
   const sel = selected
 
+  const MAIN_TABS: { id: MainTab; label: string; badge?: number }[] = [
+    { id: "jobs", label: "งานทั้งหมด" },
+    { id: "from_stock", label: "รับงานจาก Stock", badge: stockDispatches.length },
+    { id: "from_se", label: "คำขอจาก SE", badge: seRequests.length },
+  ]
+
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">งาน Repair & Calibration</h1>
           <p className="text-sm text-gray-500 mt-0.5">{jobs.length} งานทั้งหมด · {jobs.filter(j=>j.status!=="ปิดงาน").length} งานที่ยังเปิดอยู่</p>
@@ -429,205 +732,264 @@ export default function ServiceRequestPage() {
         </button>
       </div>
 
-      <div className="flex gap-5 flex-1 min-h-0">
-        {/* Left */}
-        <div className="w-80 shrink-0 flex flex-col gap-3">
-          <div className="relative">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <input value={search} onChange={e=>setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-2xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white" placeholder="ค้นหา job / model / SN" />
-          </div>
-          <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
-            {([["all","ทั้งหมด"],["repair","Repair"],["calibration","Cal"]] as ["all"|JobType, string][]).map(([v,l])=>(
-              <button key={v} onClick={()=>setFilterType(v)} className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${filterType===v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
-            ))}
-          </div>
-          <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option>ทั้งหมด</option>
-            {STATUS_FLOW.map(s=><option key={s}>{s}</option>)}
-          </select>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
-            {filtered.length === 0
-              ? <p className="text-center text-sm text-gray-400 py-10">ไม่พบงาน</p>
-              : filtered.map(j=><JobCard key={j.id} job={j} selected={sel?.id===j.id} onClick={()=>setSelected(j)} />)
-            }
+      {/* Notification Banner */}
+      {totalIncoming > 0 && (
+        <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl mb-4">
+          <Bell className="h-5 w-5 text-amber-500 shrink-0" />
+          <p className="text-sm text-amber-800 font-semibold flex-1">
+            มีงานใหม่รอรับ: {stockDispatches.length > 0 && <span className="text-orange-600">{stockDispatches.length} งานจาก Stock</span>}
+            {stockDispatches.length > 0 && seRequests.length > 0 && " · "}
+            {seRequests.length > 0 && <span className="text-violet-600">{seRequests.length} คำขอจาก SE</span>}
+          </p>
+          <div className="flex gap-2 shrink-0">
+            {stockDispatches.length > 0 && (
+              <button onClick={() => setMainTab("from_stock")} className="px-3 py-1.5 rounded-xl bg-orange-500 text-white text-xs font-bold hover:bg-orange-600 transition-colors">
+                ดูงาน Stock
+              </button>
+            )}
+            {seRequests.length > 0 && (
+              <button onClick={() => setMainTab("from_se")} className="px-3 py-1.5 rounded-xl bg-violet-500 text-white text-xs font-bold hover:bg-violet-600 transition-colors">
+                ดูคำขอ SE
+              </button>
+            )}
           </div>
         </div>
+      )}
 
-        {/* Right — Detail */}
-        {sel ? (
-          <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
-            {/* Header */}
-            <div className="bg-white rounded-3xl border border-gray-200 p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${sel.job_type==="repair" ? "bg-blue-100 text-blue-700" : "bg-teal-100 text-teal-700"}`}>
-                      {sel.job_type==="repair" ? <Wrench className="h-3.5 w-3.5" /> : <FlaskConical className="h-3.5 w-3.5" />}
-                      {sel.job_type==="repair" ? "Repair" : "Calibration"}
-                    </span>
-                    <span className={`px-3 py-1 rounded-full text-sm font-bold ${sel.priority==="urgent" ? "bg-red-100 text-red-700" : sel.priority==="high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-600"}`}>
-                      {sel.priority==="urgent" ? "⚡ เร่งด่วน" : sel.priority==="high" ? "↑ สำคัญ" : "ปกติ"}
-                    </span>
-                  </div>
-                  <p className="text-xs font-mono text-gray-500 mb-1">{sel.job_no}</p>
-                  <span className={`inline-flex px-3 py-1.5 rounded-2xl text-sm font-bold ${STATUS_COLORS[sel.status]}`}>{sel.status}</span>
-                </div>
-                {sel.status !== "ปิดงาน" && (
-                  <button onClick={()=>advanceStatus(sel)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl text-sm font-semibold transition-colors">
-                    เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-              {/* Progress bar */}
-              <div className="flex items-center gap-1">
-                {STATUS_FLOW.map((s,i) => {
-                  const cur = STATUS_FLOW.indexOf(sel.status)
-                  return <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${i <= cur ? "bg-blue-500" : "bg-gray-200"}`} title={s} />
-                })}
-              </div>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-xs text-gray-400">เริ่ม</span>
-                <span className="text-xs text-gray-400">ปิดงาน</span>
-              </div>
-            </div>
-
-            {/* Equipment Card */}
-            <div className="bg-gray-50 rounded-3xl border border-gray-200 p-6">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-4">Equipment</p>
-              <div className="flex items-start gap-4 mb-4">
-                <div className="p-3 bg-white rounded-2xl border border-gray-200">
-                  <Wrench className="h-6 w-6 text-gray-500" />
-                </div>
-                <div>
-                  <p className="text-xl font-black text-gray-900">{sel.model}</p>
-                  <p className="text-sm text-gray-500">{sel.manufacturer}</p>
-                  <p className="font-mono text-sm font-bold text-blue-600 mt-1">SN: {sel.serial_number}</p>
-                </div>
-                <div className="ml-auto">
-                  <span className={`px-3 py-1.5 rounded-full text-sm font-bold ${sel.routing==="overseas" ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
-                    {sel.routing==="overseas" ? "✈️ ต่างประเทศ" : "🇹🇭 ในประเทศ"}
-                  </span>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-white p-3 rounded-2xl">
-                  <p className="text-xs text-gray-400 mb-0.5">วันที่รับ</p>
-                  <p className="text-sm font-bold">{sel.received_date}</p>
-                </div>
-                <div className="bg-white p-3 rounded-2xl">
-                  <p className="text-xs text-gray-400 mb-0.5">ช่องทาง</p>
-                  <p className="text-sm font-bold">{sel.receive_channel}</p>
-                </div>
-                <div className="bg-white p-3 rounded-2xl">
-                  <p className="text-xs text-gray-400 mb-0.5">Tracking (เข้า)</p>
-                  <p className="text-sm font-bold font-mono">{sel.tracking_in || "—"}</p>
-                </div>
-              </div>
-              {sel.routing==="overseas" && sel.rma_code && (
-                <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded-2xl flex items-center gap-2">
-                  <Hash className="h-4 w-4 text-orange-500" />
-                  <div><p className="text-xs text-orange-600">RMA Code</p><p className="font-bold font-mono text-orange-800">{sel.rma_code}</p></div>
-                </div>
-              )}
-              {sel.job_type==="calibration" && sel.routing==="in_country" && sel.lab_name && (
-                <div className="mt-3 p-3 bg-teal-50 border border-teal-200 rounded-2xl flex items-center gap-2">
-                  <FlaskConical className="h-4 w-4 text-teal-500" />
-                  <div><p className="text-xs text-teal-600">ส่ง Lab</p><p className="font-bold text-teal-800">{sel.lab_name}</p></div>
-                </div>
-              )}
-            </div>
-
-            {/* Customer */}
-            <div className="bg-white rounded-3xl border border-gray-200 p-6">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">ลูกค้า</p>
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-100 rounded-xl"><Building2 className="h-4 w-4 text-blue-600" /></div>
-                <div>
-                  <p className="font-bold text-gray-900">{sel.customer_org}</p>
-                  {sel.customer_name && <p className="text-sm text-gray-500">{sel.customer_name}</p>}
-                </div>
-              </div>
-            </div>
-
-            {/* Symptom & Fix */}
-            <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">อาการ & การแก้ไข</p>
-              <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
-                <p className="text-xs text-red-500 mb-1">อาการที่ลูกค้าแจ้ง</p>
-                <p className="text-sm text-gray-900">{sel.symptom_reported}</p>
-              </div>
-              <div className={`p-4 rounded-2xl border ${sel.symptom_actual ? "bg-amber-50 border-amber-100" : "bg-gray-50 border-gray-200"}`}>
-                <p className="text-xs text-gray-500 mb-1">ผลการวิเคราะห์</p>
-                {sel.symptom_actual
-                  ? <p className="text-sm text-gray-900">{sel.symptom_actual}</p>
-                  : <p className="text-sm text-gray-400 italic">ยังไม่ได้วิเคราะห์</p>}
-              </div>
-              {sel.fix_method && (
-                <div className="p-4 bg-green-50 rounded-2xl border border-green-100">
-                  <p className="text-xs text-green-600 mb-1">วิธีแก้ไข</p>
-                  <p className="text-sm text-gray-900">{sel.fix_method}</p>
-                </div>
-              )}
-            </div>
-
-            {/* Quotation */}
-            {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
-              <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
-                <div className="flex items-center gap-3">
-                  <div className={`px-3 py-1.5 rounded-full text-sm font-bold ${sel.quotation_approved ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                    {sel.quotation_approved ? "✓ Approved" : "⏳ รอ Approve"}
-                  </div>
-                  {!sel.requires_approval && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full">ข้ามการ Approve</span>}
-                </div>
-                {sel.po_number && (
-                  <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-blue-500" />
-                    <div><p className="text-xs text-blue-500">PO Number</p><p className="font-bold font-mono text-blue-800">{sel.po_number}</p></div>
-                  </div>
-                )}
-                <button onClick={()=>setShowQuoteDialog(true)}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl bg-purple-500 hover:bg-purple-600 text-white text-sm font-bold transition-all">
-                  <FileText className="h-4 w-4" /> สร้าง Draft Quotation
-                </button>
-              </div>
+      {/* Main Tabs */}
+      <div className="flex gap-1 p-1 bg-gray-100 rounded-2xl mb-5 w-fit">
+        {MAIN_TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setMainTab(t.id)}
+            className={`relative px-4 py-2 rounded-xl text-sm font-semibold transition-all ${mainTab === t.id ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            {t.label}
+            {t.badge != null && t.badge > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
+                {t.badge}
+              </span>
             )}
-
-            {/* Close */}
-            {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอส่งคืน") && (
-              <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">ปิดงาน</p>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="p-3 bg-gray-50 rounded-2xl">
-                    <p className="text-xs text-gray-400 mb-0.5">Tracking (ออก)</p>
-                    <p className="text-sm font-bold font-mono">{sel.tracking_out || "—"}</p>
-                  </div>
-                  <div className="p-3 bg-gray-50 rounded-2xl">
-                    <p className="text-xs text-gray-400 mb-0.5">Invoice No.</p>
-                    <p className="text-sm font-bold">{sel.invoice_no || "—"}</p>
-                  </div>
-                  <div className="p-3 bg-gray-50 rounded-2xl">
-                    <p className="text-xs text-gray-400 mb-0.5">Warranty</p>
-                    <p className="text-sm font-bold">{sel.warranty_days ? `${sel.warranty_days} วัน` : "—"}</p>
-                  </div>
-                </div>
-                {sel.status === "ปิดงาน" && (
-                  <div className="flex items-center gap-2 p-3 bg-green-50 rounded-2xl border border-green-200">
-                    <CheckCircle2 className="h-5 w-5 text-green-600" />
-                    <p className="text-sm font-bold text-green-800">งานปิดแล้ว</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-300">
-            <div className="text-center"><Wrench className="h-16 w-16 mx-auto mb-3 opacity-20" /><p className="text-sm">เลือกงานเพื่อดูรายละเอียด</p></div>
-          </div>
-        )}
+          </button>
+        ))}
       </div>
 
-      {showNew && <NewJobDialog onClose={()=>setShowNew(false)} onSave={j=>{setJobs(p=>[j,...p]);setSelected(j)}} />}
+      {/* ── Tab: Jobs ── */}
+      {mainTab === "jobs" && (
+        <div className="flex gap-5 flex-1 min-h-0">
+          {/* Left */}
+          <div className="w-80 shrink-0 flex flex-col gap-3">
+            <div className="relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input value={search} onChange={e=>setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-2xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white" placeholder="ค้นหา job / model / SN" />
+            </div>
+            <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
+              {([["all","ทั้งหมด"],["repair","Repair"],["calibration","Cal"]] as ["all"|JobType, string][]).map(([v,l])=>(
+                <button key={v} onClick={()=>setFilterType(v)} className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${filterType===v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
+              ))}
+            </div>
+            <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option>ทั้งหมด</option>
+              {STATUS_FLOW.map(s=><option key={s}>{s}</option>)}
+            </select>
+            <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+              {filtered.length === 0
+                ? <p className="text-center text-sm text-gray-400 py-10">ไม่พบงาน</p>
+                : filtered.map(j=><JobCard key={j.id} job={j} selected={sel?.id===j.id} onClick={()=>setSelected(j)} />)
+              }
+            </div>
+          </div>
+
+          {/* Right — Detail */}
+          {sel ? (
+            <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
+              {/* Header */}
+              <div className="bg-white rounded-3xl border border-gray-200 p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${sel.job_type==="repair" ? "bg-blue-100 text-blue-700" : "bg-teal-100 text-teal-700"}`}>
+                        {sel.job_type==="repair" ? <Wrench className="h-3.5 w-3.5" /> : <FlaskConical className="h-3.5 w-3.5" />}
+                        {sel.job_type==="repair" ? "Repair" : "Calibration"}
+                      </span>
+                      <span className={`px-3 py-1 rounded-full text-sm font-bold ${sel.priority==="urgent" ? "bg-red-100 text-red-700" : sel.priority==="high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-600"}`}>
+                        {sel.priority==="urgent" ? "⚡ เร่งด่วน" : sel.priority==="high" ? "↑ สำคัญ" : "ปกติ"}
+                      </span>
+                    </div>
+                    <p className="text-xs font-mono text-gray-500 mb-1">{sel.job_no}</p>
+                    <span className={`inline-flex px-3 py-1.5 rounded-2xl text-sm font-bold ${STATUS_COLORS[sel.status]}`}>{sel.status}</span>
+                  </div>
+                  {sel.status !== "ปิดงาน" && (
+                    <button onClick={()=>advanceStatus(sel)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl text-sm font-semibold transition-colors">
+                      เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {/* Progress bar */}
+                <div className="flex items-center gap-1">
+                  {STATUS_FLOW.map((s,i) => {
+                    const cur = STATUS_FLOW.indexOf(sel.status)
+                    return <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${i <= cur ? "bg-blue-500" : "bg-gray-200"}`} title={s} />
+                  })}
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-xs text-gray-400">เริ่ม</span>
+                  <span className="text-xs text-gray-400">ปิดงาน</span>
+                </div>
+              </div>
+
+              {/* Equipment Card */}
+              <div className="bg-gray-50 rounded-3xl border border-gray-200 p-6">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-4">Equipment</p>
+                <div className="flex items-start gap-4 mb-4">
+                  <div className="p-3 bg-white rounded-2xl border border-gray-200">
+                    <Wrench className="h-6 w-6 text-gray-500" />
+                  </div>
+                  <div>
+                    <p className="text-xl font-black text-gray-900">{sel.model}</p>
+                    <p className="text-sm text-gray-500">{sel.manufacturer}</p>
+                    <p className="font-mono text-sm font-bold text-blue-600 mt-1">SN: {sel.serial_number}</p>
+                  </div>
+                  <div className="ml-auto">
+                    <span className={`px-3 py-1.5 rounded-full text-sm font-bold ${sel.routing==="overseas" ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
+                      {sel.routing==="overseas" ? "✈️ ต่างประเทศ" : "🇹🇭 ในประเทศ"}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-white p-3 rounded-2xl">
+                    <p className="text-xs text-gray-400 mb-0.5">วันที่รับ</p>
+                    <p className="text-sm font-bold">{sel.received_date}</p>
+                  </div>
+                  <div className="bg-white p-3 rounded-2xl">
+                    <p className="text-xs text-gray-400 mb-0.5">ช่องทาง</p>
+                    <p className="text-sm font-bold">{sel.receive_channel}</p>
+                  </div>
+                  <div className="bg-white p-3 rounded-2xl">
+                    <p className="text-xs text-gray-400 mb-0.5">Tracking (เข้า)</p>
+                    <p className="text-sm font-bold font-mono">{sel.tracking_in || "—"}</p>
+                  </div>
+                </div>
+                {sel.routing==="overseas" && sel.rma_code && (
+                  <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded-2xl flex items-center gap-2">
+                    <Hash className="h-4 w-4 text-orange-500" />
+                    <div><p className="text-xs text-orange-600">RMA Code</p><p className="font-bold font-mono text-orange-800">{sel.rma_code}</p></div>
+                  </div>
+                )}
+                {sel.job_type==="calibration" && sel.routing==="in_country" && sel.lab_name && (
+                  <div className="mt-3 p-3 bg-teal-50 border border-teal-200 rounded-2xl flex items-center gap-2">
+                    <FlaskConical className="h-4 w-4 text-teal-500" />
+                    <div><p className="text-xs text-teal-600">ส่ง Lab</p><p className="font-bold text-teal-800">{sel.lab_name}</p></div>
+                  </div>
+                )}
+              </div>
+
+              {/* Customer */}
+              <div className="bg-white rounded-3xl border border-gray-200 p-6">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">ลูกค้า</p>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-100 rounded-xl"><Building2 className="h-4 w-4 text-blue-600" /></div>
+                  <div>
+                    <p className="font-bold text-gray-900">{sel.customer_org}</p>
+                    {sel.customer_name && <p className="text-sm text-gray-500">{sel.customer_name}</p>}
+                  </div>
+                </div>
+              </div>
+
+              {/* Symptom & Fix */}
+              <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">อาการ & การแก้ไข</p>
+                <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
+                  <p className="text-xs text-red-500 mb-1">อาการที่ลูกค้าแจ้ง</p>
+                  <p className="text-sm text-gray-900">{sel.symptom_reported}</p>
+                </div>
+                <div className={`p-4 rounded-2xl border ${sel.symptom_actual ? "bg-amber-50 border-amber-100" : "bg-gray-50 border-gray-200"}`}>
+                  <p className="text-xs text-gray-500 mb-1">ผลการวิเคราะห์</p>
+                  {sel.symptom_actual
+                    ? <p className="text-sm text-gray-900">{sel.symptom_actual}</p>
+                    : <p className="text-sm text-gray-400 italic">ยังไม่ได้วิเคราะห์</p>}
+                </div>
+                {sel.fix_method && (
+                  <div className="p-4 bg-green-50 rounded-2xl border border-green-100">
+                    <p className="text-xs text-green-600 mb-1">วิธีแก้ไข</p>
+                    <p className="text-sm text-gray-900">{sel.fix_method}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Quotation */}
+              {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
+                <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
+                  <div className="flex items-center gap-3">
+                    <div className={`px-3 py-1.5 rounded-full text-sm font-bold ${sel.quotation_approved ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                      {sel.quotation_approved ? "✓ Approved" : "⏳ รอ Approve"}
+                    </div>
+                    {!sel.requires_approval && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full">ข้ามการ Approve</span>}
+                  </div>
+                  {sel.po_number && (
+                    <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-blue-500" />
+                      <div><p className="text-xs text-blue-500">PO Number</p><p className="font-bold font-mono text-blue-800">{sel.po_number}</p></div>
+                    </div>
+                  )}
+                  <button onClick={()=>setShowQuoteDialog(true)}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl bg-purple-500 hover:bg-purple-600 text-white text-sm font-bold transition-all">
+                    <FileText className="h-4 w-4" /> สร้าง Draft Quotation
+                  </button>
+                </div>
+              )}
+
+              {/* Close */}
+              {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอส่งคืน") && (
+                <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">ปิดงาน</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-gray-50 rounded-2xl">
+                      <p className="text-xs text-gray-400 mb-0.5">Tracking (ออก)</p>
+                      <p className="text-sm font-bold font-mono">{sel.tracking_out || "—"}</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 rounded-2xl">
+                      <p className="text-xs text-gray-400 mb-0.5">Invoice No.</p>
+                      <p className="text-sm font-bold">{sel.invoice_no || "—"}</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 rounded-2xl">
+                      <p className="text-xs text-gray-400 mb-0.5">Warranty</p>
+                      <p className="text-sm font-bold">{sel.warranty_days ? `${sel.warranty_days} วัน` : "—"}</p>
+                    </div>
+                  </div>
+                  {sel.status === "ปิดงาน" && (
+                    <div className="flex items-center gap-2 p-3 bg-green-50 rounded-2xl border border-green-200">
+                      <CheckCircle2 className="h-5 w-5 text-green-600" />
+                      <p className="text-sm font-bold text-green-800">งานปิดแล้ว</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-gray-300">
+              <div className="text-center"><Wrench className="h-16 w-16 mx-auto mb-3 opacity-20" /><p className="text-sm">เลือกงานเพื่อดูรายละเอียด</p></div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Tab: From Stock ── */}
+      {mainTab === "from_stock" && (
+        <div className="flex-1 overflow-y-auto">
+          <FromStockTab dispatches={stockDispatches} onAccept={acceptStockDispatch} />
+        </div>
+      )}
+
+      {/* ── Tab: From SE ── */}
+      {mainTab === "from_se" && (
+        <div className="flex-1 overflow-y-auto">
+          <FromSETab requests={seRequests} onAccept={acceptSERequest} />
+        </div>
+      )}
+
+      {showNew && <NewJobDialog onClose={()=>setShowNew(false)} onSave={j=>{setJobs(p=>[j,...p]);setSelected(j);setMainTab("jobs")}} />}
       {showQuoteDialog && sel && <QuotationDraftDialog job={sel} onClose={()=>setShowQuoteDialog(false)} />}
     </div>
   )

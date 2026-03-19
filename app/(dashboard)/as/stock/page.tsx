@@ -518,12 +518,21 @@ export default function StockPage() {
         <div className="flex-1 overflow-y-auto space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-bold text-gray-900">การ Booking ของ Sales</h3>
-              <p className="text-sm text-gray-500 mt-0.5">จัดการการจอง SN สำหรับลูกค้าแต่ละราย</p>
+              <h3 className="font-bold text-gray-900">การ Booking (Reserved) ของ Sales</h3>
+              <p className="text-sm text-gray-500 mt-0.5">เจ้าหน้าที่ Stock เป็นผู้ตั้งสถานะ Reserved · แสดง Sales ที่จองและลูกค้าเป้าหมาย</p>
             </div>
             <button onClick={()=>setBookingDialog(true)} className="flex items-center gap-2 px-4 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl text-sm font-bold transition-colors">
               <Plus className="h-4 w-4" /> เพิ่ม Booking
             </button>
+          </div>
+
+          {/* Info banner */}
+          <div className="flex items-start gap-3 p-4 bg-orange-50 border border-orange-200 rounded-2xl">
+            <Bookmark className="h-4 w-4 text-orange-500 shrink-0 mt-0.5" />
+            <p className="text-sm text-orange-700">
+              <span className="font-semibold">Stock Staff</span> เป็นผู้กำหนดและยกเลิกสถานะ <span className="font-semibold">Reserved</span> เมื่อ Sales แจ้งจองสินค้าให้ลูกค้า
+              · ใช้ปุ่ม "เพิ่ม Booking" เพื่อบันทึก Sales ที่จองและชื่อลูกค้า
+            </p>
           </div>
 
           {bookings.length === 0 ? (
@@ -534,7 +543,7 @@ export default function StockPage() {
           ) : (
             <div className="grid grid-cols-2 gap-4">
               {bookings.map(b => (
-                <div key={b.id} className="p-5 bg-white rounded-3xl border border-gray-200 shadow-sm">
+                <div key={b.id} className="p-5 bg-white rounded-3xl border-2 border-orange-200 shadow-sm">
                   <div className="flex items-start justify-between mb-4">
                     <div>
                       <p className="font-bold text-gray-900">{b.item_name}</p>
@@ -542,28 +551,30 @@ export default function StockPage() {
                     </div>
                     <Pill label="Reserved" color={STATUS_COLORS.reserved} />
                   </div>
-                  <div className="space-y-2 mb-4">
+                  {/* จองโดย / Booked by section */}
+                  <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 mb-3 space-y-2">
+                    <p className="text-xs font-bold text-orange-600 uppercase tracking-wide">จองโดย (Booked by)</p>
                     <div className="flex items-center gap-2 text-sm">
-                      <User className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="text-gray-600">Sales:</span>
-                      <span className="font-semibold text-gray-900">{b.sales_name}</span>
+                      <User className="h-3.5 w-3.5 text-orange-400 shrink-0" />
+                      <span className="text-gray-600 text-xs">Sales:</span>
+                      <span className="font-bold text-gray-900">{b.sales_name}</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
-                      <Building2 className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="text-gray-600">ลูกค้า:</span>
-                      <span className="font-semibold text-gray-900">{b.customer_name}</span>
+                      <Building2 className="h-3.5 w-3.5 text-orange-400 shrink-0" />
+                      <span className="text-gray-600 text-xs">ลูกค้า:</span>
+                      <span className="font-bold text-gray-900">{b.customer_name}</span>
                     </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <ClipboardList className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="text-gray-500 text-xs">{b.booked_date}</span>
-                      {b.note && <span className="text-gray-400 text-xs">· {b.note}</span>}
-                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm mb-4">
+                    <ClipboardList className="h-3.5 w-3.5 text-gray-400" />
+                    <span className="text-gray-500 text-xs">วันที่จอง: {b.booked_date}</span>
+                    {b.note && <span className="text-gray-400 text-xs">· {b.note}</span>}
                   </div>
                   <div className="flex gap-2">
                     <button onClick={()=>setDispatchDialog(items.find(i=>i.id===b.item_id) || null as any)} className="flex-1 py-2 rounded-xl bg-blue-50 text-blue-600 text-xs font-bold hover:bg-blue-100 flex items-center justify-center gap-1">
                       <Send className="h-3 w-3" /> ส่งงาน Services
                     </button>
-                    <button onClick={()=>removeBooking(b.id)} className="flex-1 py-2 rounded-xl bg-red-50 text-red-500 text-xs font-bold hover:bg-red-100">ยกเลิก Booking</button>
+                    <button onClick={()=>removeBooking(b.id)} className="flex-1 py-2 rounded-xl bg-red-50 text-red-500 text-xs font-bold hover:bg-red-100">ยกเลิก Reserved</button>
                   </div>
                 </div>
               ))}
