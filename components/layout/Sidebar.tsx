@@ -20,12 +20,14 @@ import {
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useNotifications } from "@/hooks/useNotifications";
 import type { UserRole } from "@/types/database";
 
 type NavItem = {
   label: string;
   href: string;
   icon: React.ReactNode;
+  badgeKey?: "serviceRequest" | "inspection";
 };
 
 type NavGroup = {
@@ -42,9 +44,9 @@ const NAV_GROUPS: NavGroup[] = [
     roles: ["admin", "as_staff"],
     items: [
       { label: "Customer Register", href: "/as/customers", icon: <Users size={16} /> },
-      { label: "Stock In/Out", href: "/as/stock", icon: <Package size={16} /> },
+      { label: "Stock In/Out", href: "/as/stock", icon: <Package size={16} />, badgeKey: "inspection" },
       { label: "Stock Monitor", href: "/as/stock-monitor", icon: <BarChart2 size={16} /> },
-      { label: "Service Request", href: "/as/service-request", icon: <Wrench size={16} /> },
+      { label: "Service Request", href: "/as/service-request", icon: <Wrench size={16} />, badgeKey: "serviceRequest" },
       { label: "Service Monitor", href: "/as/service-monitor", icon: <Activity size={16} /> },
     ],
   },
@@ -55,7 +57,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Sales Pipeline", href: "/se/pipeline", icon: <TrendingUp size={16} /> },
       { label: "Deal & Activity", href: "/se/deals", icon: <Briefcase size={16} /> },
-      { label: "Service Request", href: "/se/service-request", icon: <Wrench size={16} /> },
+      { label: "Service Request", href: "/se/service-request", icon: <Wrench size={16} />, badgeKey: "serviceRequest" },
       { label: "Follow Up", href: "/se/followup", icon: <CalendarCheck size={16} /> },
       { label: "Forecast / Month", href: "/se/forecast", icon: <FileText size={16} /> },
     ],
@@ -66,6 +68,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const { profile, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const notif = useNotifications();
 
   const role = profile?.role ?? "as_staff";
 
@@ -74,6 +77,13 @@ export function Sidebar() {
   };
 
   const visibleGroups = NAV_GROUPS.filter((g) => g.roles.includes(role));
+
+  function getBadgeCount(key?: NavItem["badgeKey"]): number {
+    if (!key) return 0;
+    if (key === "serviceRequest") return notif.serviceRequestPending;
+    if (key === "inspection") return notif.inspectionPending;
+    return 0;
+  }
 
   return (
     <aside className="w-60 min-h-screen bg-white border-r border-gray-200 flex flex-col">
@@ -125,21 +135,29 @@ export function Sidebar() {
 
               {isOpen && (
                 <div className="mt-1 space-y-0.5">
-                  {group.items.map((item) => (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={cn(
-                        "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
-                        pathname === item.href
-                          ? "bg-sky-50 text-sky-600 font-medium"
-                          : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-                      )}
-                    >
-                      {item.icon}
-                      {item.label}
-                    </Link>
-                  ))}
+                  {group.items.map((item) => {
+                    const badgeCount = getBadgeCount(item.badgeKey);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={cn(
+                          "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
+                          pathname === item.href
+                            ? "bg-sky-50 text-sky-600 font-medium"
+                            : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                        )}
+                      >
+                        {item.icon}
+                        <span className="flex-1 truncate">{item.label}</span>
+                        {badgeCount > 0 && (
+                          <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                            {badgeCount > 99 ? "99+" : badgeCount}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
                 </div>
               )}
             </div>
