@@ -5,11 +5,13 @@ import { useSearchParams } from "next/navigation"
 import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users } from "lucide-react"
 import {
   readASWorkflowSettings,
+  readIncomingSERequests,
   readJobs,
   readRepairToCalRequests,
   readOrganizations,
   readStockDispatches,
   appendRepairToCalRequest,
+  removeIncomingSERequest,
   removeRepairToCalRequest,
   upsertOrganizationByName,
   writeJobs,
@@ -18,6 +20,7 @@ import {
   type ASServiceJob as ServiceJob,
   type ASStockDispatch as StockDispatch,
   type ASRepairToCalRequest as RepairToCalRequest,
+  type ASIncomingSERequest,
   type ASOrganization,
 } from "@/lib/mock/as-store"
 import { STATUS_FLOW, getSlaState, getTransitionBlockReason, getCalibrationAlertLevel } from "@/lib/mock/as-logic"
@@ -26,19 +29,12 @@ type JobType = "repair" | "calibration"
 type Priority = "urgent" | "high" | "normal"
 type Routing = "in_country" | "overseas"
 type MainTab = "jobs" | "from_stock" | "from_se" | "from_repair_cal"
+const QC_STATUS_FLOW: ServiceJob["status"][] = ["รอประเมิน", "QC", "รอส่งคืน", "ปิดงาน"]
 
 // Store-backed types are imported from lib/mock/as-store
 
 // ── Service request originated by SE team ────────────────────────────────────
-interface SERequest {
-  id: string
-  customer_org: string
-  equipment: string
-  issue_description: string
-  requested_by: string   // SE person name
-  requested_at: string
-  priority: Priority
-}
+type SERequest = ASIncomingSERequest
 
 function CancelJobDialog({
   job,
@@ -815,7 +811,7 @@ export default function ServiceRequestPage() {
   // Stock dispatches state
   const [stockDispatches, setStockDispatches] = useState<StockDispatch[]>([])
   // SE requests state
-  const [seRequests, setSERequests] = useState<SERequest[]>(MOCK_SE_REQUESTS)
+  const [seRequests, setSERequests] = useState<SERequest[]>([])
   // Calibration requests coming from Repair
   const [repairToCalRequests, setRepairToCalRequests] = useState<RepairToCalRequest[]>([])
   const [hydrated, setHydrated] = useState(false)
@@ -830,6 +826,7 @@ export default function ServiceRequestPage() {
     setJobs(loadedJobs)
     setStockDispatches(loadedDispatches)
     setRepairToCalRequests(readRepairToCalRequests([]))
+    setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
     setSelected(loadedJobs[0] ?? null)
     setHydrated(true)
 
@@ -866,12 +863,15 @@ export default function ServiceRequestPage() {
       setStockDispatches(readStockDispatches([]))
       setJobs(readJobs([]))
       setRepairToCalRequests(readRepairToCalRequests([]))
+      setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
       setStatusFlow(readASWorkflowSettings().service_statuses)
     }
     window.addEventListener("storage", sync)
+    window.addEventListener("as-store-updated", sync)
     const timer = window.setInterval(sync, 1200)
     return () => {
       window.removeEventListener("storage", sync)
+      window.removeEventListener("as-store-updated", sync)
       window.clearInterval(timer)
     }
   }, [hydrated])
@@ -914,16 +914,30 @@ export default function ServiceRequestPage() {
   }
 
   function canAdvance(job: ServiceJob) {
+    if (isQCJob(job)) return job.status !== "ปิดงาน" && job.status !== "ยกเลิก"
     return !getTransitionBlockReason(job)
+  }
+
+  function isQCJob(job: ServiceJob) {
+    return (
+      job.source === "stock" &&
+      job.job_type === "calibration" &&
+      job.symptom_reported.includes("QC ก่อนเข้า Stock")
+    )
+  }
+
+  function getJobFlow(job: ServiceJob) {
+    if (isQCJob(job)) return QC_STATUS_FLOW
+    return statusFlow.length > 0 ? statusFlow : STATUS_FLOW
   }
 
   function advanceStatus(job: ServiceJob) {
     if (!canAdvance(job)) return
-    const flow = statusFlow.length > 0 ? statusFlow : STATUS_FLOW
+    const flow = getJobFlow(job)
     const idx = flow.indexOf(job.status)
     if (idx < flow.length - 1) {
       const next = flow[idx + 1]
-      const skip = next === "รอ Quotation Approve" && !job.requires_approval
+      const skip = !isQCJob(job) && next === "รอ Quotation Approve" && !job.requires_approval
       const actualNext: ServiceJob["status"] = skip ? (flow[idx + 2] ?? next) : next
       const updated: ServiceJob = {
         ...job,
@@ -940,6 +954,19 @@ export default function ServiceRequestPage() {
 
   // Accept dispatched job from Stock → create a new ServiceJob
   function acceptStockDispatch(d: StockDispatch) {
+    const liveDispatches = readStockDispatches([])
+    const stillPending = liveDispatches.some((x) => x.id === d.id)
+    if (!stillPending) return
+    const liveJobs = readJobs([])
+    const alreadyAccepted = liveJobs.some(
+      (j) => j.source === "stock" && j.source_dispatch_id === d.id,
+    )
+    if (alreadyAccepted) {
+      writeStockDispatches(liveDispatches.filter((x) => x.id !== d.id))
+      setStockDispatches((prev) => prev.filter((x) => x.id !== d.id))
+      return
+    }
+
     const count = Math.floor(Math.random() * 900) + 100
     const newJob: ServiceJob = {
       id: Date.now().toString(),
@@ -964,8 +991,16 @@ export default function ServiceRequestPage() {
       status_logs: [{ at: new Date().toISOString(), to: "รอประเมิน", reason: `Accepted from Stock (${d.id})` }],
       created_at: new Date().toISOString().split("T")[0],
     }
-    setJobs(prev => [newJob, ...prev])
-    setStockDispatches(prev => prev.filter(x => x.id !== d.id))
+    const nextJobs = [newJob, ...jobs]
+    const nextDispatches = stockDispatches.filter((x) => x.id !== d.id)
+    // Persist both sides immediately to avoid race with polling/event sync.
+    writeJobs(nextJobs)
+    writeStockDispatches(nextDispatches)
+    setJobs(nextJobs)
+    setStockDispatches(nextDispatches)
+    setSearch("")
+    setFilterType("all")
+    setFilterStatus("ทั้งหมด")
     setSelected(newJob)
     setMainTab("jobs")
     const orgs = readOrganizations([])
@@ -974,6 +1009,16 @@ export default function ServiceRequestPage() {
 
   // Accept SE request → create a new ServiceJob
   function acceptSERequest(r: SERequest) {
+    const liveJobs = readJobs([])
+    const alreadyAccepted = liveJobs.some(
+      (j) => j.source === "se" && j.source_dispatch_id === r.id,
+    )
+    if (alreadyAccepted) {
+      setSERequests((prev) => prev.filter((x) => x.id !== r.id))
+      removeIncomingSERequest(r.id)
+      return
+    }
+
     const count = Math.floor(Math.random() * 900) + 100
     const newJob: ServiceJob = {
       id: Date.now().toString(),
@@ -993,10 +1038,17 @@ export default function ServiceRequestPage() {
       symptom_reported: r.issue_description,
       requires_approval: true,
       source: "se",
+      source_dispatch_id: r.id,
       created_at: new Date().toISOString().split("T")[0],
     }
-    setJobs(prev => [newJob, ...prev])
+    const nextJobs = [newJob, ...jobs]
+    writeJobs(nextJobs)
+    setJobs(nextJobs)
     setSERequests(prev => prev.filter(x => x.id !== r.id))
+    removeIncomingSERequest(r.id)
+    setSearch("")
+    setFilterType("all")
+    setFilterStatus("ทั้งหมด")
     setSelected(newJob)
     setMainTab("jobs")
     const orgs = readOrganizations([])
@@ -1031,6 +1083,16 @@ export default function ServiceRequestPage() {
   }
 
   function acceptRepairToCalRequest(req: RepairToCalRequest) {
+    const liveJobs = readJobs([])
+    const alreadyAccepted = liveJobs.some(
+      (j) => j.job_type === "calibration" && j.source_dispatch_id === req.id,
+    )
+    if (alreadyAccepted) {
+      setRepairToCalRequests((prev) => prev.filter((r) => r.id !== req.id))
+      removeRepairToCalRequest(req.id)
+      return
+    }
+
     const today = new Date().toISOString().split("T")[0]
     const count = Math.floor(Math.random() * 900) + 100
     const newJob: ServiceJob = {
@@ -1055,14 +1117,20 @@ export default function ServiceRequestPage() {
       created_at: new Date().toISOString().split("T")[0],
     }
 
-    setJobs((prev) => [newJob, ...prev])
+    const nextJobs = [newJob, ...jobs]
+    writeJobs(nextJobs)
+    setJobs(nextJobs)
     setRepairToCalRequests((prev) => prev.filter((r) => r.id !== req.id))
     removeRepairToCalRequest(req.id)
+    setSearch("")
+    setFilterType("all")
+    setFilterStatus("ทั้งหมด")
     setSelected(newJob)
     setMainTab("jobs")
   }
 
   const sel = selected
+  const selectedFlow = sel ? getJobFlow(sel) : (statusFlow.length > 0 ? statusFlow : STATUS_FLOW)
   const proactiveId = searchParams.get("proactive_id")
 
   useEffect(() => {
@@ -1227,7 +1295,7 @@ export default function ServiceRequestPage() {
                       >
                         เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
                       </button>
-                      {!canAdvance(sel) && (
+                      {!canAdvance(sel) && !isQCJob(sel) && (
                         <p className="text-xs text-red-500 text-right">{getTransitionBlockReason(sel)}</p>
                       )}
                       <button
@@ -1244,8 +1312,8 @@ export default function ServiceRequestPage() {
                 </div>
                 {/* Progress bar */}
                 <div className="flex items-center gap-1">
-                  {(statusFlow.length > 0 ? statusFlow : STATUS_FLOW).map((s,i) => {
-                    const cur = (statusFlow.length > 0 ? statusFlow : STATUS_FLOW).indexOf(sel.status)
+                  {selectedFlow.map((s,i) => {
+                    const cur = selectedFlow.indexOf(sel.status)
                     return <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${i <= cur ? "bg-gradient-to-r from-sky-500 to-violet-500 premium-pulse" : "bg-gray-200"}`} title={s} />
                   })}
                 </div>
@@ -1395,7 +1463,7 @@ export default function ServiceRequestPage() {
               )}
 
               {/* Quotation */}
-              {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
+              {!isQCJob(sel) && STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
                   <div className="flex items-center gap-3">
@@ -1454,7 +1522,7 @@ export default function ServiceRequestPage() {
               )}
 
               {/* Close */}
-              {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอส่งคืน") && (
+              {selectedFlow.indexOf(sel.status) >= selectedFlow.indexOf("รอส่งคืน") && (
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">ปิดงาน</p>
                   <div className="grid grid-cols-3 gap-3">

@@ -123,6 +123,16 @@ export interface ASRepairToCalRequest {
   created_at: string
 }
 
+export interface ASIncomingSERequest {
+  id: string
+  customer_org: string
+  equipment: string
+  issue_description: string
+  requested_by: string
+  requested_at: string
+  priority: ASPriority
+}
+
 export interface ASProactiveCalibrationAsset {
   id: string
   customer_org: string
@@ -200,6 +210,7 @@ const KEYS = {
   productCatalog: "product_catalog",
   moduleAssignments: "as_module_assignments",
   asWorkflowSettings: "as_workflow_settings",
+  seIncomingRequests: "as_se_incoming_requests",
 } as const
 
 export const DEFAULT_AS_DROPDOWN_CONFIG: ASDropdownConfig = {
@@ -306,7 +317,11 @@ export function readStore<T>(key: string, fallback: T): T {
 
 export function writeStore<T>(key: string, value: T) {
   if (!hasWindow()) return
-  window.localStorage.setItem(key, JSON.stringify(value))
+  const nextRaw = JSON.stringify(value)
+  const prevRaw = window.localStorage.getItem(key)
+  if (prevRaw === nextRaw) return
+  window.localStorage.setItem(key, nextRaw)
+  window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key } }))
 }
 
 export function readJobs(fallback: ASServiceJob[]) {
@@ -367,6 +382,24 @@ export function appendRepairToCalRequest(req: ASRepairToCalRequest) {
 export function removeRepairToCalRequest(id: string) {
   const current = readRepairToCalRequests([])
   writeRepairToCalRequests(current.filter((r) => r.id !== id))
+}
+
+export function readIncomingSERequests(fallback: ASIncomingSERequest[]) {
+  return readStore<ASIncomingSERequest[]>(KEYS.seIncomingRequests, fallback)
+}
+
+export function writeIncomingSERequests(value: ASIncomingSERequest[]) {
+  writeStore(KEYS.seIncomingRequests, value)
+}
+
+export function appendIncomingSERequest(req: ASIncomingSERequest) {
+  const current = readIncomingSERequests([])
+  writeIncomingSERequests([req, ...current])
+}
+
+export function removeIncomingSERequest(id: string) {
+  const current = readIncomingSERequests([])
+  writeIncomingSERequests(current.filter((r) => r.id !== id))
 }
 
 export function readProactiveCalibrationAssets(fallback: ASProactiveCalibrationAsset[]) {

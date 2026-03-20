@@ -1233,9 +1233,11 @@ export default function StockPage() {
     }
     sync()
     window.addEventListener("storage", sync)
+    window.addEventListener("as-store-updated", sync)
     const timer = window.setInterval(sync, 1200)
     return () => {
       window.removeEventListener("storage", sync)
+      window.removeEventListener("as-store-updated", sync)
       window.clearInterval(timer)
     }
   }, [])
@@ -1494,6 +1496,7 @@ export default function StockPage() {
 
   function updateItemStatus(itemId: string, nextStatus: ItemStatus) {
     const target = items.find((i) => i.id === itemId)
+    if (target?.status === nextStatus) return
     if (target && nextStatus === "sold" && target.serial_number) {
       const now = new Date().toISOString()
       const linkedModules = [
@@ -1513,6 +1516,33 @@ export default function StockPage() {
         appendModuleAssignment(rec)
         setModuleAssignments((prev) => [rec, ...prev])
       })
+    }
+    if (target && nextStatus === "pending_qc") {
+      const customerOrg = target.qc_customer_org?.trim() || "ลูกค้าไม่ระบุ"
+      const customerContact = target.qc_customer_contact?.trim() || "ไม่ระบุผู้ติดต่อ"
+      const exists = readStockDispatches([]).some(
+        (d) =>
+          d.serial_number === (target.serial_number || "—") &&
+          d.customer_org === customerOrg &&
+          d.job_type === "calibration" &&
+          d.symptom === "QC ก่อนเข้า Stock (จาก Quick Action)",
+      )
+      if (!exists) {
+        appendStockDispatch({
+          id: `sd-qc-quick-${Date.now()}`,
+          item_name: target.model || target.name,
+          manufacturer: target.brand,
+          model: target.model || target.name,
+          serial_number: target.serial_number || "—",
+          customer_org: customerOrg,
+          customer_contact: customerContact,
+          symptom: "QC ก่อนเข้า Stock (จาก Quick Action)",
+          job_type: "calibration",
+          routing: "overseas",
+          dispatched_by: "Stock",
+          dispatched_at: today,
+        })
+      }
     }
 
     setItems((prev) =>

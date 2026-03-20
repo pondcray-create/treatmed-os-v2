@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { FileText, Plus, Search } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
+import { appendIncomingSERequest, readJobs, type ASServiceJob } from "@/lib/mock/as-store"
 
 interface SEServiceRequest {
   id: string
@@ -62,6 +63,7 @@ const OWNERS = ["คุณอนันต์", "คุณนภา", "คุณ�
 
 export default function SEServiceRequestPage() {
   const [requests, setRequests] = useState<SEServiceRequest[]>(MOCK_SR)
+  const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
   const [search, setSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<SEServiceRequest | null>(null)
@@ -75,6 +77,41 @@ export default function SEServiceRequestPage() {
   const filtered = requests.filter(r =>
     r.customer_name.includes(search) || r.ref_no.includes(search) || r.description.includes(search)
   )
+  const serviceStatusBySourceId = useMemo(() => {
+    const map = new Map<string, { status: ASServiceJob["status"]; updatedAt: string }>()
+    serviceJobs
+      .filter((j) => j.source === "se" && j.source_dispatch_id)
+      .forEach((j) => {
+        const lastLogAt = j.status_logs?.[j.status_logs.length - 1]?.at
+        map.set(j.source_dispatch_id as string, {
+          status: j.status,
+          updatedAt: lastLogAt || j.created_at,
+        })
+      })
+    return map
+  }, [serviceJobs])
+
+  const asStatusClass = (status: ASServiceJob["status"]) => {
+    if (status === "ปิดงาน") return "bg-green-100 text-green-700 border-green-200"
+    if (status === "ยกเลิก") return "bg-gray-100 text-gray-700 border-gray-200"
+    if (status === "QC") return "bg-teal-100 text-teal-700 border-teal-200"
+    if (status === "กำลังซ่อม" || status === "กำลังประเมิน") return "bg-blue-100 text-blue-700 border-blue-200"
+    if (status === "รออะไหล่" || status === "รอ PO") return "bg-orange-100 text-orange-700 border-orange-200"
+    return "bg-amber-100 text-amber-800 border-amber-200"
+  }
+
+  useEffect(() => {
+    const sync = () => setServiceJobs(readJobs([]))
+    sync()
+    window.addEventListener("storage", sync)
+    window.addEventListener("as-store-updated", sync)
+    const timer = window.setInterval(sync, 1200)
+    return () => {
+      window.removeEventListener("storage", sync)
+      window.removeEventListener("as-store-updated", sync)
+      window.clearInterval(timer)
+    }
+  }, [])
 
   function openAdd() {
     setEditTarget(null)
@@ -93,13 +130,27 @@ export default function SEServiceRequestPage() {
       setRequests(prev => prev.map(r => r.id === editTarget.id ? { ...r, ...data } : r))
       toast({ title: "อัปเดตสำเร็จ" })
     } else {
+      const createdDate = new Date().toISOString().split("T")[0]
+      const requestId = `se-${Date.now()}`
+      const equipmentText = data.deal_title?.trim()
+        ? `${data.deal_title.trim()}`
+        : "SE Service Request"
+      appendIncomingSERequest({
+        id: requestId,
+        customer_org: data.customer_name,
+        equipment: equipmentText,
+        issue_description: data.description,
+        requested_by: data.owner,
+        requested_at: createdDate,
+        priority: "normal",
+      })
       setRequests(prev => [{
         ...data,
-        id: Date.now().toString(),
+        id: requestId,
         ref_no: `SESR-${String(requests.length + 1).padStart(3, "0")}`,
         deal_title: data.deal_title ?? "",
         scheduled_date: data.scheduled_date ?? "",
-        created_at: new Date().toISOString().split("T")[0],
+        created_at: createdDate,
       }, ...prev])
       toast({ title: "สร้าง Service Request สำเร็จ" })
     }
@@ -148,12 +199,14 @@ export default function SEServiceRequestPage() {
                 <TableHead>วันที่นัด</TableHead>
                 <TableHead>ผู้รับผิดชอบ</TableHead>
                 <TableHead>สถานะ</TableHead>
+                <TableHead>สถานะจาก AS</TableHead>
+                <TableHead>อัปเดตล่าสุดจาก AS</TableHead>
                 <TableHead className="text-right">จัดการ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-10">ไม่พบข้อมูล</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-10">ไม่พบข้อมูล</TableCell></TableRow>
               ) : filtered.map(r => (
                 <TableRow key={r.id}>
                   <TableCell className="font-mono text-xs">{r.ref_no}</TableCell>
@@ -166,6 +219,20 @@ export default function SEServiceRequestPage() {
                   <TableCell className="text-sm">{r.scheduled_date ? formatDate(r.scheduled_date) : "-"}</TableCell>
                   <TableCell>{r.owner}</TableCell>
                   <TableCell><Badge variant={statusVariant(r.status) as any}>{statusLabel(r.status)}</Badge></TableCell>
+                  <TableCell>
+                    {serviceStatusBySourceId.has(r.id) ? (
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${asStatusClass(serviceStatusBySourceId.get(r.id)!.status)}`}>
+                        {serviceStatusBySourceId.get(r.id)!.status}
+                      </span>
+                    ) : (
+                      <Badge variant="outline">รอฝ่าย Service รับงาน</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {serviceStatusBySourceId.has(r.id)
+                      ? formatDate(serviceStatusBySourceId.get(r.id)!.updatedAt)
+                      : "-"}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="icon" onClick={() => openEdit(r)}>
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
