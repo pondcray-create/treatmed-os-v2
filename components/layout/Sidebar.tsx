@@ -8,11 +8,13 @@ import {
   BarChart2,
   Wrench,
   Activity,
+  CalendarClock,
   TrendingUp,
   Briefcase,
   CalendarCheck,
   FileText,
   LayoutDashboard,
+  Settings,
   LogOut,
   ChevronDown,
   ChevronRight,
@@ -46,6 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Stock Monitor", href: "/as/stock-monitor", icon: <BarChart2 size={16} /> },
       { label: "Service Request", href: "/as/service-request", icon: <Wrench size={16} /> },
       { label: "Service Monitor", href: "/as/service-monitor", icon: <Activity size={16} /> },
+      { label: "Calibration Proactive", href: "/as/calibration-proactive", icon: <CalendarClock size={16} /> },
     ],
   },
   {
@@ -104,6 +107,18 @@ export function Sidebar() {
         >
           <LayoutDashboard size={16} />
           Dashboard
+        </Link>
+        <Link
+          href="/settings"
+          className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+            pathname === "/settings" || pathname === "/as/settings"
+              ? "bg-sky-50 text-sky-600"
+              : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+          )}
+        >
+          <Settings size={16} />
+          Settings
         </Link>
 
         {/* Module Groups */}

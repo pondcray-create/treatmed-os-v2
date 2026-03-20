@@ -1,38 +1,33 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users } from "lucide-react"
+import {
+  readASWorkflowSettings,
+  readJobs,
+  readRepairToCalRequests,
+  readOrganizations,
+  readStockDispatches,
+  appendRepairToCalRequest,
+  removeRepairToCalRequest,
+  upsertOrganizationByName,
+  writeJobs,
+  writeOrganizations,
+  writeStockDispatches,
+  type ASServiceJob as ServiceJob,
+  type ASStockDispatch as StockDispatch,
+  type ASRepairToCalRequest as RepairToCalRequest,
+  type ASOrganization,
+} from "@/lib/mock/as-store"
+import { STATUS_FLOW, getSlaState, getTransitionBlockReason, getCalibrationAlertLevel } from "@/lib/mock/as-logic"
 
 type JobType = "repair" | "calibration"
-type JobStatus = "รอประเมิน" | "กำลังประเมิน" | "รอ Quotation Approve" | "รอ PO" | "ในคิว" | "กำลังซ่อม" | "รออะไหล่" | "QC" | "รอส่งคืน" | "ปิดงาน"
 type Priority = "urgent" | "high" | "normal"
 type Routing = "in_country" | "overseas"
-type MainTab = "jobs" | "from_stock" | "from_se"
+type MainTab = "jobs" | "from_stock" | "from_se" | "from_repair_cal"
 
-interface ServiceJob {
-  id: string; job_no: string; job_type: JobType; status: JobStatus; priority: Priority
-  serial_number: string; manufacturer: string; model: string
-  received_date: string; tracking_in: string; receive_channel: "พนักงาน" | "ขนส่งเอกชน"
-  customer_name: string; customer_org: string
-  routing: Routing; rma_code?: string; lab_name?: string
-  symptom_reported: string; symptom_actual?: string; fix_method?: string
-  requires_approval: boolean; quotation_approved?: boolean; po_number?: string
-  tracking_out?: string; invoice_no?: string; warranty_days?: string
-  technician?: string; created_at: string
-}
-
-// ── Dispatched job from Stock department ──────────────────────────────────────
-interface StockDispatch {
-  id: string
-  item_name: string
-  serial_number: string
-  customer_org: string
-  customer_contact: string
-  symptom: string
-  job_type: "repair" | "calibration"
-  dispatched_by: string   // Stock staff name
-  dispatched_at: string
-}
+// Store-backed types are imported from lib/mock/as-store
 
 // ── Service request originated by SE team ────────────────────────────────────
 interface SERequest {
@@ -45,7 +40,61 @@ interface SERequest {
   priority: Priority
 }
 
-// ── Mock organizations (same as customers page) ────────────────────────────────
+function CancelJobDialog({
+  job,
+  reason,
+  onReasonChange,
+  onClose,
+  onConfirm,
+}: {
+  job: ServiceJob
+  reason: string
+  onReasonChange: (value: string) => void
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm bg-white"
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-lg text-red-700">ยกเลิกงาน</h3>
+          <button onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="mb-3 p-3 rounded-xl border border-red-100 bg-red-50">
+          <p className="text-xs text-red-600">Job</p>
+          <p className="text-sm font-semibold text-gray-900">{job.job_no} · {job.model}</p>
+        </div>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">เหตุผลการยกเลิก *</label>
+        <textarea
+          value={reason}
+          onChange={(e) => onReasonChange(e.target.value)}
+          rows={4}
+          className={`${inp} resize-none`}
+          placeholder="ระบุเหตุผล เช่น ลูกค้ายกเลิก, ข้อมูลผิดพลาด, รวมงานกับใบงานอื่น"
+        />
+        <div className="flex gap-3 mt-4">
+          <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
+            ปิด
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!reason.trim()}
+            className="flex-1 py-2.5 rounded-xl bg-red-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-red-600"
+          >
+            ยืนยันยกเลิกงาน
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Seed organizations (fallback only) ─────────────────────────────────────────
 const MOCK_ORGS = [
   "โรงพยาบาลศิริราช",
   "โรงพยาบาลกรุงเทพ",
@@ -59,9 +108,14 @@ const MOCK_ORGS = [
   "โรงพยาบาลนครพิงค์",
 ]
 
-const STATUS_FLOW: JobStatus[] = ["รอประเมิน","กำลังประเมิน","รอ Quotation Approve","รอ PO","ในคิว","กำลังซ่อม","รออะไหล่","QC","รอส่งคืน","ปิดงาน"]
+function addOneYear(date: string) {
+  if (!date) return ""
+  const d = new Date(date)
+  d.setFullYear(d.getFullYear() + 1)
+  return d.toISOString().split("T")[0]
+}
 
-const STATUS_COLORS: Record<JobStatus, string> = {
+const STATUS_COLORS: Record<ServiceJob["status"], string> = {
   "รอประเมิน": "bg-gray-100 text-gray-600",
   "กำลังประเมิน": "bg-blue-100 text-blue-700",
   "รอ Quotation Approve": "bg-purple-100 text-purple-700",
@@ -72,6 +126,7 @@ const STATUS_COLORS: Record<JobStatus, string> = {
   "QC": "bg-teal-100 text-teal-700",
   "รอส่งคืน": "bg-indigo-100 text-indigo-700",
   "ปิดงาน": "bg-green-100 text-green-700",
+  "ยกเลิก": "bg-gray-200 text-gray-700",
 }
 
 const MOCK_JOBS: ServiceJob[] = [
@@ -106,6 +161,7 @@ const MOCK_JOBS: ServiceJob[] = [
     symptom_reported:"สอบเทียบรายปี ส่ง RaySafe สวีเดน",
     requires_approval:false, quotation_approved:true, po_number:"PO-SIR-2024-078",
     tracking_out:"TH444555666", invoice_no:"INV-2024-156", warranty_days:"365",
+    calibration_date:"2024-03-20", due_date:"2025-03-20",
     technician:"ช่างสมชาย", created_at:"2024-02-20" },
   { id:"5", job_no:"JOB-2024-005", job_type:"repair", status:"รออะไหล่", priority:"high",
     serial_number:"PS4-2019-00712", manufacturer:"Fluke Biomedical", model:"ProSim 4",
@@ -177,7 +233,7 @@ function Pill({ label, color }: { label: string; color: string }) {
 function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolean; onClick: () => void }) {
   const priorityColor = job.priority === "urgent" ? "bg-red-100 text-red-700" : job.priority === "high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-500"
   return (
-    <button onClick={onClick} className={`w-full text-left p-4 rounded-2xl border transition-all ${selected ? "bg-blue-50 border-blue-300 shadow-sm" : "bg-white border-gray-200 hover:border-gray-300 hover:shadow-sm"}`}>
+    <button onClick={onClick} className={`w-full text-left p-4 rounded-2xl border transition-all backdrop-blur ${selected ? "bg-blue-50/85 border-blue-300 shadow-sm" : "bg-white/75 border-white/70 hover:border-blue-200 hover:shadow-[0_10px_24px_rgba(59,130,246,0.15)]"}`}>
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
           <span className={`p-1 rounded-lg ${job.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"}`}>
@@ -199,8 +255,23 @@ function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolea
 }
 
 // ── Org Select Component ──────────────────────────────────────────────────────
-function OrgSelect({ value, onChange, required, className }: { value: string; onChange: (v: string) => void; required?: boolean; className?: string }) {
-  const [custom, setCustom] = useState(!MOCK_ORGS.includes(value) && value !== "")
+function OrgSelect({
+  value,
+  onChange,
+  required,
+  className,
+  orgNames,
+}: {
+  value: string
+  onChange: (v: string) => void
+  required?: boolean
+  className?: string
+  orgNames: string[]
+}) {
+  const [custom, setCustom] = useState(!orgNames.includes(value) && value !== "")
+  useEffect(() => {
+    setCustom(!orgNames.includes(value) && value !== "")
+  }, [orgNames, value])
   return (
     <div className="space-y-2">
       <select
@@ -213,7 +284,7 @@ function OrgSelect({ value, onChange, required, className }: { value: string; on
         required={!!required && !custom}
       >
         <option value="">-- เลือกหน่วยงาน --</option>
-        {MOCK_ORGS.map(o => <option key={o} value={o}>{o}</option>)}
+        {orgNames.map(o => <option key={o} value={o}>{o}</option>)}
         <option value="__custom__">+ พิมพ์เอง...</option>
       </select>
       {custom && (
@@ -230,8 +301,32 @@ function OrgSelect({ value, onChange, required, className }: { value: string; on
 }
 
 // ── New Job Dialog ────────────────────────────────────────────────────────────
-function NewJobDialog({ onClose, onSave }: { onClose: () => void; onSave: (j: ServiceJob) => void }) {
-  const [form, setForm] = useState({ job_type: "repair" as JobType, priority: "normal" as Priority, routing: "in_country" as Routing, receive_channel: "ขนส่งเอกชน" as "พนักงาน"|"ขนส่งเอกชน", manufacturer: "Fluke Biomedical", model: "", serial_number: "", received_date: new Date().toISOString().split("T")[0], tracking_in: "", customer_name: "", customer_org: "", symptom_reported: "", rma_code: "", lab_name: "", requires_approval: true })
+function NewJobDialog({
+  onClose,
+  onSave,
+  orgNames,
+}: {
+  onClose: () => void
+  onSave: (j: ServiceJob) => void
+  orgNames: string[]
+}) {
+  const [form, setForm] = useState({
+    job_type: "repair" as JobType,
+    priority: "normal" as Priority,
+    routing: "in_country" as Routing,
+    receive_channel: "ขนส่งเอกชน" as "พนักงาน" | "ขนส่งเอกชน",
+    manufacturer: "Fluke Biomedical",
+    model: "",
+    serial_number: "",
+    received_date: new Date().toISOString().split("T")[0],
+    tracking_in: "",
+    customer_name: "",
+    customer_org: "",
+    symptom_reported: "",
+    rma_code: "",
+    lab_name: "",
+    requires_approval: true,
+  })
   function submit(e: React.FormEvent) {
     e.preventDefault()
     const count = Math.floor(Math.random() * 900) + 100
@@ -348,6 +443,7 @@ function NewJobDialog({ onClose, onSave }: { onClose: () => void; onSave: (j: Se
                 value={form.customer_org}
                 onChange={v => setForm(f => ({ ...f, customer_org: v }))}
                 required
+                orgNames={orgNames}
                 className={inp}
               />
             </div>
@@ -619,9 +715,95 @@ function FromSETab({
   )
 }
 
+// ── From Repair Tab (Repair -> Cal requests) ───────────────────────────────
+function FromRepairCalTab({
+  requests,
+  onAccept,
+}: {
+  requests: RepairToCalRequest[]
+  onAccept: (r: RepairToCalRequest) => void
+}) {
+  if (requests.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-gray-300">
+        <FlaskConical className="h-16 w-16 mb-3 opacity-30" />
+        <p className="text-sm">ไม่มีคำขอ Cal จากงานซ่อม</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">
+        คำขอสอบเทียบที่ฝ่ายซ่อมส่งมา กรุณากด &quot;รับงาน&quot; เพื่อสร้าง Calibration job แยกต่างหาก
+      </p>
+      {requests.map((r) => (
+        <div key={r.id} className="bg-white rounded-3xl border border-emerald-200 p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="p-1.5 rounded-lg bg-emerald-100">
+                  <FlaskConical className="h-3.5 w-3.5 text-emerald-600" />
+                </span>
+                <p className="font-bold text-gray-900">{r.customer_org}</p>
+              </div>
+              <p className="text-xs text-gray-500 ml-8">
+                Job ซ่อม: {r.source_job_no}
+              </p>
+            </div>
+            <Pill
+              label={r.priority === "urgent" ? "เร่งด่วน" : r.priority === "high" ? "สำคัญ" : "ปกติ"}
+              color={
+                r.priority === "urgent"
+                  ? "bg-red-100 text-red-700"
+                  : r.priority === "high"
+                    ? "bg-orange-100 text-orange-700"
+                    : "bg-gray-100 text-gray-500"
+              }
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="p-3 bg-gray-50 rounded-2xl">
+              <p className="text-xs text-gray-400 mb-0.5">Equipment</p>
+              <p className="text-sm font-semibold text-gray-900">{r.model}</p>
+              <p className="text-xs text-gray-500 font-mono mt-1">SN: {r.serial_number}</p>
+            </div>
+            <div className="p-3 bg-gray-50 rounded-2xl">
+              <p className="text-xs text-gray-400 mb-0.5">Routing</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {r.routing === "overseas" ? "ต่างประเทศ" : "ในประเทศ"}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">ผู้ติดต่อ: {r.customer_name}</p>
+            </div>
+          </div>
+
+          <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-100 mb-4">
+            <p className="text-xs text-emerald-600 mb-1">อาการ/เหตุผลจาก Repair</p>
+            <p className="text-sm text-gray-800">{r.symptom_reported}</p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-gray-400">
+              ขอเมื่อ <span className="font-semibold text-gray-600">{r.requested_at}</span>
+            </div>
+            <button
+              onClick={() => onAccept(r)}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-sm font-bold transition-colors"
+            >
+              <CheckCircle2 className="h-4 w-4" /> รับงาน
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ServiceRequestPage() {
-  const [jobs, setJobs] = useState<ServiceJob[]>(MOCK_JOBS)
+  const searchParams = useSearchParams()
+  const [jobs, setJobs] = useState<ServiceJob[]>([])
   const [selected, setSelected] = useState<ServiceJob | null>(MOCK_JOBS[0])
   const [search, setSearch] = useState("")
   const [filterType, setFilterType] = useState<"all"|JobType>("all")
@@ -631,11 +813,70 @@ export default function ServiceRequestPage() {
   const [mainTab, setMainTab] = useState<MainTab>("jobs")
 
   // Stock dispatches state
-  const [stockDispatches, setStockDispatches] = useState<StockDispatch[]>(MOCK_STOCK_DISPATCHES)
+  const [stockDispatches, setStockDispatches] = useState<StockDispatch[]>([])
   // SE requests state
   const [seRequests, setSERequests] = useState<SERequest[]>(MOCK_SE_REQUESTS)
+  // Calibration requests coming from Repair
+  const [repairToCalRequests, setRepairToCalRequests] = useState<RepairToCalRequest[]>([])
+  const [hydrated, setHydrated] = useState(false)
+  const [orgNames, setOrgNames] = useState<string[]>(MOCK_ORGS)
+  const [statusFlow, setStatusFlow] = useState<ServiceJob["status"][]>(STATUS_FLOW)
+  const [cancelDialogJob, setCancelDialogJob] = useState<ServiceJob | null>(null)
+  const [cancelReason, setCancelReason] = useState("")
 
-  const totalIncoming = stockDispatches.length + seRequests.length
+  useEffect(() => {
+    const loadedJobs = readJobs(MOCK_JOBS)
+    const loadedDispatches = readStockDispatches(MOCK_STOCK_DISPATCHES)
+    setJobs(loadedJobs)
+    setStockDispatches(loadedDispatches)
+    setRepairToCalRequests(readRepairToCalRequests([]))
+    setSelected(loadedJobs[0] ?? null)
+    setHydrated(true)
+
+    const fallbackOrgs: ASOrganization[] = MOCK_ORGS.map((n, idx) => ({
+      id: `seed-${idx}`,
+      name: n,
+      org_type: "New",
+      org_format: "",
+      province: "",
+      region: "",
+      health_district: 0,
+      one_qa: false,
+      contacts: [],
+      created_at: new Date().toISOString(),
+    }))
+    const loadedOrgs = readOrganizations(fallbackOrgs)
+    setOrgNames(loadedOrgs.map((o) => o.name))
+    setStatusFlow(readASWorkflowSettings().service_statuses)
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    writeJobs(jobs)
+  }, [jobs, hydrated])
+
+  useEffect(() => {
+    if (!hydrated) return
+    writeStockDispatches(stockDispatches)
+  }, [stockDispatches, hydrated])
+
+  useEffect(() => {
+    if (!hydrated) return
+    const sync = () => {
+      setStockDispatches(readStockDispatches([]))
+      setJobs(readJobs([]))
+      setRepairToCalRequests(readRepairToCalRequests([]))
+      setStatusFlow(readASWorkflowSettings().service_statuses)
+    }
+    window.addEventListener("storage", sync)
+    const timer = window.setInterval(sync, 1200)
+    return () => {
+      window.removeEventListener("storage", sync)
+      window.clearInterval(timer)
+    }
+  }, [hydrated])
+
+  const totalIncoming = stockDispatches.length + seRequests.length + repairToCalRequests.length
 
   const filtered = jobs.filter(j => {
     const q = search.toLowerCase()
@@ -643,14 +884,55 @@ export default function ServiceRequestPage() {
       (filterType === "all" || j.job_type === filterType) &&
       (filterStatus === "ทั้งหมด" || j.status === filterStatus)
   })
+  const overdueCount = useMemo(() => jobs.filter((j) => getSlaState(j) === "overdue").length, [jobs])
+  const warningCount = useMemo(() => jobs.filter((j) => getSlaState(j) === "warning").length, [jobs])
+  const calibrationAlertCount = useMemo(
+    () => jobs.filter((j) => getCalibrationAlertLevel(j) !== "none").length,
+    [jobs],
+  )
+
+  function updateSelected(patch: Partial<ServiceJob>) {
+    if (!selected) return
+    const updated = { ...selected, ...patch }
+    setJobs((prev) => prev.map((j) => (j.id === selected.id ? updated : j)))
+    setSelected(updated)
+  }
+
+  function cancelJob(job: ServiceJob, reason: string) {
+    if (!reason || !reason.trim()) return
+    const updated: ServiceJob = {
+      ...job,
+      status: "ยกเลิก",
+      cancellation_reason: reason.trim(),
+      status_logs: [
+        ...(job.status_logs || []),
+        { at: new Date().toISOString(), from: job.status, to: "ยกเลิก", reason: reason.trim() },
+      ],
+    }
+    setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
+    setSelected(updated)
+  }
+
+  function canAdvance(job: ServiceJob) {
+    return !getTransitionBlockReason(job)
+  }
 
   function advanceStatus(job: ServiceJob) {
-    const idx = STATUS_FLOW.indexOf(job.status)
-    if (idx < STATUS_FLOW.length - 1) {
-      const next = STATUS_FLOW[idx + 1]
+    if (!canAdvance(job)) return
+    const flow = statusFlow.length > 0 ? statusFlow : STATUS_FLOW
+    const idx = flow.indexOf(job.status)
+    if (idx < flow.length - 1) {
+      const next = flow[idx + 1]
       const skip = next === "รอ Quotation Approve" && !job.requires_approval
-      const actualNext: JobStatus = skip ? (STATUS_FLOW[idx + 2] ?? next) : next
-      const updated: ServiceJob = { ...job, status: actualNext }
+      const actualNext: ServiceJob["status"] = skip ? (flow[idx + 2] ?? next) : next
+      const updated: ServiceJob = {
+        ...job,
+        status: actualNext,
+        status_logs: [
+          ...(job.status_logs || []),
+          { at: new Date().toISOString(), from: job.status, to: actualNext },
+        ],
+      }
       setJobs(prev => prev.map(j => j.id === job.id ? updated : j))
       setSelected(updated)
     }
@@ -666,22 +948,28 @@ export default function ServiceRequestPage() {
       status: "รอประเมิน",
       priority: "normal",
       serial_number: d.serial_number,
-      manufacturer: "—",
-      model: d.item_name,
+      manufacturer: d.manufacturer || "—",
+      model: d.model || d.item_name,
       received_date: new Date().toISOString().split("T")[0],
       tracking_in: "—",
       receive_channel: "พนักงาน",
       customer_name: d.customer_contact,
       customer_org: d.customer_org,
-      routing: "in_country",
+      routing: (d.routing || "in_country") as Routing,
       symptom_reported: d.symptom,
       requires_approval: true,
+      source: "stock",
+      source_dispatch_id: d.id,
+      due_date: d.due_date,
+      status_logs: [{ at: new Date().toISOString(), to: "รอประเมิน", reason: `Accepted from Stock (${d.id})` }],
       created_at: new Date().toISOString().split("T")[0],
     }
     setJobs(prev => [newJob, ...prev])
     setStockDispatches(prev => prev.filter(x => x.id !== d.id))
     setSelected(newJob)
     setMainTab("jobs")
+    const orgs = readOrganizations([])
+    writeOrganizations(upsertOrganizationByName(orgs, d.customer_org, d.customer_contact))
   }
 
   // Accept SE request → create a new ServiceJob
@@ -704,42 +992,127 @@ export default function ServiceRequestPage() {
       routing: "in_country",
       symptom_reported: r.issue_description,
       requires_approval: true,
+      source: "se",
       created_at: new Date().toISOString().split("T")[0],
     }
     setJobs(prev => [newJob, ...prev])
     setSERequests(prev => prev.filter(x => x.id !== r.id))
     setSelected(newJob)
     setMainTab("jobs")
+    const orgs = readOrganizations([])
+    writeOrganizations(upsertOrganizationByName(orgs, r.customer_org, r.requested_by))
+  }
+
+  // When a Repair job finishes and wants to send to Calibration (Cal team),
+  // create an intermediate request inbox (no Calibration job is created yet).
+  function requestCalibrationFromRepair(job: ServiceJob) {
+    const today = new Date().toISOString().split("T")[0]
+    const existing = readRepairToCalRequests([]).find((r) => r.source_job_id === job.id)
+    if (existing) return
+
+    const req: RepairToCalRequest = {
+      id: `rc-${Date.now()}`,
+      source_job_id: job.id,
+      source_job_no: job.job_no,
+      serial_number: job.serial_number,
+      manufacturer: job.manufacturer,
+      model: job.model,
+      customer_org: job.customer_org,
+      customer_name: job.customer_name,
+      routing: job.routing,
+      priority: job.priority,
+      symptom_reported: job.symptom_reported,
+      requested_at: today,
+      created_at: new Date().toISOString(),
+    }
+
+    appendRepairToCalRequest(req)
+    setRepairToCalRequests((prev) => [req, ...prev])
+  }
+
+  function acceptRepairToCalRequest(req: RepairToCalRequest) {
+    const today = new Date().toISOString().split("T")[0]
+    const count = Math.floor(Math.random() * 900) + 100
+    const newJob: ServiceJob = {
+      id: Date.now().toString(),
+      job_no: `JOB-2024-0${count}`,
+      job_type: "calibration",
+      status: "รอประเมิน",
+      priority: req.priority,
+      serial_number: req.serial_number,
+      manufacturer: req.manufacturer,
+      model: req.model,
+      received_date: today,
+      tracking_in: "—",
+      receive_channel: "พนักงาน",
+      customer_name: req.customer_name,
+      customer_org: req.customer_org,
+      routing: req.routing,
+      symptom_reported: `จากงานซ่อม ${req.source_job_no}: ${req.symptom_reported}`,
+      requires_approval: true,
+      source: "manual",
+      source_dispatch_id: req.id,
+      created_at: new Date().toISOString().split("T")[0],
+    }
+
+    setJobs((prev) => [newJob, ...prev])
+    setRepairToCalRequests((prev) => prev.filter((r) => r.id !== req.id))
+    removeRepairToCalRequest(req.id)
+    setSelected(newJob)
+    setMainTab("jobs")
   }
 
   const sel = selected
+  const proactiveId = searchParams.get("proactive_id")
+
+  useEffect(() => {
+    if (!proactiveId || jobs.length === 0) return
+    const target = jobs.find((j) => j.source === "proactive" && j.source_dispatch_id === proactiveId)
+    if (!target) return
+    setSelected(target)
+    setMainTab("jobs")
+  }, [proactiveId, jobs])
 
   const MAIN_TABS: { id: MainTab; label: string; badge?: number }[] = [
     { id: "jobs", label: "งานทั้งหมด" },
     { id: "from_stock", label: "รับงานจาก Stock", badge: stockDispatches.length },
     { id: "from_se", label: "คำขอจาก SE", badge: seRequests.length },
+    { id: "from_repair_cal", label: "คำขอ Cal จาก Repair", badge: repairToCalRequests.length },
   ]
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative z-10 p-1">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">งาน Repair & Calibration</h1>
           <p className="text-sm text-gray-500 mt-0.5">{jobs.length} งานทั้งหมด · {jobs.filter(j=>j.status!=="ปิดงาน").length} งานที่ยังเปิดอยู่</p>
         </div>
-        <button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl text-sm font-bold shadow-sm transition-colors">
+        <button onClick={() => setShowNew(true)} className="modern-button-primary premium-glow rounded-2xl">
           <Plus className="h-4 w-4" /> สร้างงานใหม่
         </button>
       </div>
 
       {/* Notification Banner */}
-      {totalIncoming > 0 && (
-        <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl mb-4">
+      {(totalIncoming > 0 || overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && (
+        <div className="glass-panel flex items-center gap-3 p-4 rounded-2xl mb-4">
           <Bell className="h-5 w-5 text-amber-500 shrink-0" />
           <p className="text-sm text-amber-800 font-semibold flex-1">
-            มีงานใหม่รอรับ: {stockDispatches.length > 0 && <span className="text-orange-600">{stockDispatches.length} งานจาก Stock</span>}
-            {stockDispatches.length > 0 && seRequests.length > 0 && " · "}
-            {seRequests.length > 0 && <span className="text-violet-600">{seRequests.length} คำขอจาก SE</span>}
+            {totalIncoming > 0 && (
+              <>
+                มีงานใหม่รอรับ:
+                {stockDispatches.length > 0 && <span className="text-orange-600">{stockDispatches.length} งานจาก Stock</span>}
+                {stockDispatches.length > 0 && seRequests.length > 0 && " · "}
+                {seRequests.length > 0 && <span className="text-violet-600">{seRequests.length} คำขอจาก SE</span>}
+                {(stockDispatches.length > 0 || seRequests.length > 0) && repairToCalRequests.length > 0 && " · "}
+                {repairToCalRequests.length > 0 && <span className="text-emerald-600">{repairToCalRequests.length} คำขอ Cal จาก Repair</span>}
+              </>
+            )}
+            {totalIncoming > 0 && (overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && " · "}
+            {overdueCount > 0 && <span className="text-red-600">{overdueCount} งานเกิน SLA</span>}
+            {overdueCount > 0 && warningCount > 0 && " · "}
+            {warningCount > 0 && <span className="text-orange-600">{warningCount} งานใกล้ชน SLA</span>}
+            {(overdueCount > 0 || warningCount > 0) && calibrationAlertCount > 0 && " · "}
+            {calibrationAlertCount > 0 && <span className="text-teal-600">{calibrationAlertCount} Calibration แจ้งเตือน</span>}
           </p>
           <div className="flex gap-2 shrink-0">
             {stockDispatches.length > 0 && (
@@ -752,17 +1125,26 @@ export default function ServiceRequestPage() {
                 ดูคำขอ SE
               </button>
             )}
+            {repairToCalRequests.length > 0 && (
+              <button
+                onClick={() => setMainTab("from_repair_cal")}
+                className="px-3 py-1.5 rounded-xl bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600 transition-colors"
+              >
+                ดูคำขอ Cal
+              </button>
+            )}
           </div>
         </div>
       )}
 
       {/* Main Tabs */}
-      <div className="flex gap-1 p-1 bg-gray-100 rounded-2xl mb-5 w-fit">
+      <div className="flex gap-1 p-1 glass-panel rounded-2xl mb-5 w-fit">
         {MAIN_TABS.map(t => (
           <button
             key={t.id}
             onClick={() => setMainTab(t.id)}
-            className={`relative px-4 py-2 rounded-xl text-sm font-semibold transition-all ${mainTab === t.id ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            data-active={mainTab === t.id}
+            className={`tab-premium relative px-4 py-2 rounded-xl text-sm font-semibold transition-all ${mainTab === t.id ? "text-gray-900" : "text-gray-500 hover:text-gray-700"}`}
           >
             {t.label}
             {t.badge != null && t.badge > 0 && (
@@ -778,10 +1160,10 @@ export default function ServiceRequestPage() {
       {mainTab === "jobs" && (
         <div className="flex gap-5 flex-1 min-h-0">
           {/* Left */}
-          <div className="w-80 shrink-0 flex flex-col gap-3">
+          <div className="w-80 shrink-0 flex flex-col gap-3 glass-panel rounded-3xl p-3">
             <div className="relative">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input value={search} onChange={e=>setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-2xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white" placeholder="ค้นหา job / model / SN" />
+              <input value={search} onChange={e=>setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-2xl border border-white/70 focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm bg-white/70 backdrop-blur" placeholder="ค้นหา job / model / SN" />
             </div>
             <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
               {([["all","ทั้งหมด"],["repair","Repair"],["calibration","Cal"]] as ["all"|JobType, string][]).map(([v,l])=>(
@@ -790,11 +1172,17 @@ export default function ServiceRequestPage() {
             </div>
             <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option>ทั้งหมด</option>
-              {STATUS_FLOW.map(s=><option key={s}>{s}</option>)}
+              {statusFlow.map(s=><option key={s}>{s}</option>)}
             </select>
             <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
               {filtered.length === 0
-                ? <p className="text-center text-sm text-gray-400 py-10">ไม่พบงาน</p>
+                ? (
+                  <div className="py-10 space-y-2">
+                    <div className="skeleton-premium h-4 w-3/4 mx-auto" />
+                    <div className="skeleton-premium h-4 w-2/3 mx-auto" />
+                    <p className="text-center text-sm text-gray-400 pt-2">ไม่พบงาน</p>
+                  </div>
+                )
                 : filtered.map(j=><JobCard key={j.id} job={j} selected={sel?.id===j.id} onClick={()=>setSelected(j)} />)
               }
             </div>
@@ -804,7 +1192,7 @@ export default function ServiceRequestPage() {
           {sel ? (
             <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
               {/* Header */}
-              <div className="bg-white rounded-3xl border border-gray-200 p-6">
+              <div className="glass-card rounded-3xl p-6">
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <div className="flex items-center gap-2 mb-2">
@@ -817,19 +1205,48 @@ export default function ServiceRequestPage() {
                       </span>
                     </div>
                     <p className="text-xs font-mono text-gray-500 mb-1">{sel.job_no}</p>
-                    <span className={`inline-flex px-3 py-1.5 rounded-2xl text-sm font-bold ${STATUS_COLORS[sel.status]}`}>{sel.status}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex px-3 py-1.5 rounded-2xl text-sm font-bold ${STATUS_COLORS[sel.status]}`}>{sel.status}</span>
+                      <span className={`inline-flex px-2.5 py-1 rounded-xl text-xs font-semibold ${
+                        getSlaState(sel) === "overdue"
+                          ? "bg-red-100 text-red-700"
+                          : getSlaState(sel) === "warning"
+                            ? "bg-orange-100 text-orange-700"
+                            : "bg-emerald-100 text-emerald-700"
+                      }`}>
+                        SLA: {getSlaState(sel) === "overdue" ? "Overdue" : getSlaState(sel) === "warning" ? "Warning" : "On Track"}
+                      </span>
+                    </div>
                   </div>
-                  {sel.status !== "ปิดงาน" && (
-                    <button onClick={()=>advanceStatus(sel)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl text-sm font-semibold transition-colors">
-                      เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
-                    </button>
+                  {sel.status !== "ปิดงาน" && sel.status !== "ยกเลิก" && (
+                    <div className="space-y-1 flex flex-col items-end">
+                      <button
+                        onClick={()=>advanceStatus(sel)}
+                        disabled={!canAdvance(sel)}
+                        className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 enabled:hover:bg-blue-600 disabled:bg-gray-300 text-white rounded-2xl text-sm font-semibold transition-colors"
+                      >
+                        เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
+                      </button>
+                      {!canAdvance(sel) && (
+                        <p className="text-xs text-red-500 text-right">{getTransitionBlockReason(sel)}</p>
+                      )}
+                      <button
+                        onClick={() => {
+                          setCancelReason(sel.cancellation_reason || "")
+                          setCancelDialogJob(sel)
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100"
+                      >
+                        ยกเลิกงาน
+                      </button>
+                    </div>
                   )}
                 </div>
                 {/* Progress bar */}
                 <div className="flex items-center gap-1">
-                  {STATUS_FLOW.map((s,i) => {
-                    const cur = STATUS_FLOW.indexOf(sel.status)
-                    return <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${i <= cur ? "bg-blue-500" : "bg-gray-200"}`} title={s} />
+                  {(statusFlow.length > 0 ? statusFlow : STATUS_FLOW).map((s,i) => {
+                    const cur = (statusFlow.length > 0 ? statusFlow : STATUS_FLOW).indexOf(sel.status)
+                    return <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${i <= cur ? "bg-gradient-to-r from-sky-500 to-violet-500 premium-pulse" : "bg-gray-200"}`} title={s} />
                   })}
                 </div>
                 <div className="flex items-center justify-between mt-1">
@@ -839,7 +1256,7 @@ export default function ServiceRequestPage() {
               </div>
 
               {/* Equipment Card */}
-              <div className="bg-gray-50 rounded-3xl border border-gray-200 p-6">
+              <div className="glass-card rounded-3xl p-6">
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-4">Equipment</p>
                 <div className="flex items-start gap-4 mb-4">
                   <div className="p-3 bg-white rounded-2xl border border-gray-200">
@@ -885,7 +1302,7 @@ export default function ServiceRequestPage() {
               </div>
 
               {/* Customer */}
-              <div className="bg-white rounded-3xl border border-gray-200 p-6">
+              <div className="glass-card rounded-3xl p-6">
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">ลูกค้า</p>
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-blue-100 rounded-xl"><Building2 className="h-4 w-4 text-blue-600" /></div>
@@ -897,7 +1314,7 @@ export default function ServiceRequestPage() {
               </div>
 
               {/* Symptom & Fix */}
-              <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+              <div className="glass-card rounded-3xl p-6 space-y-3">
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">อาการ & การแก้ไข</p>
                 <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
                   <p className="text-xs text-red-500 mb-1">อาการที่ลูกค้าแจ้ง</p>
@@ -905,21 +1322,81 @@ export default function ServiceRequestPage() {
                 </div>
                 <div className={`p-4 rounded-2xl border ${sel.symptom_actual ? "bg-amber-50 border-amber-100" : "bg-gray-50 border-gray-200"}`}>
                   <p className="text-xs text-gray-500 mb-1">ผลการวิเคราะห์</p>
-                  {sel.symptom_actual
-                    ? <p className="text-sm text-gray-900">{sel.symptom_actual}</p>
-                    : <p className="text-sm text-gray-400 italic">ยังไม่ได้วิเคราะห์</p>}
+                  <textarea
+                    value={sel.symptom_actual || ""}
+                    onChange={(e) => updateSelected({ symptom_actual: e.target.value })}
+                    rows={2}
+                    placeholder="กรอกผลการวิเคราะห์"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+                  />
                 </div>
-                {sel.fix_method && (
-                  <div className="p-4 bg-green-50 rounded-2xl border border-green-100">
-                    <p className="text-xs text-green-600 mb-1">วิธีแก้ไข</p>
-                    <p className="text-sm text-gray-900">{sel.fix_method}</p>
-                  </div>
-                )}
+                <div className="p-4 bg-green-50 rounded-2xl border border-green-100">
+                  <p className="text-xs text-green-600 mb-1">วิธีแก้ไข</p>
+                  <textarea
+                    value={sel.fix_method || ""}
+                    onChange={(e) => updateSelected({ fix_method: e.target.value })}
+                    rows={2}
+                    placeholder="กรอกวิธีแก้ไข"
+                    className="w-full px-3 py-2 rounded-xl border border-green-200 text-sm bg-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    value={sel.technician || ""}
+                    onChange={(e) => updateSelected({ technician: e.target.value })}
+                    placeholder="ผู้รับผิดชอบ / Technician"
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+                  />
+                  <input
+                    value={sel.customer_name || ""}
+                    onChange={(e) => updateSelected({ customer_name: e.target.value })}
+                    placeholder="ผู้ติดต่อลูกค้า"
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+                  />
+                </div>
               </div>
+              {sel.cancellation_reason && (
+                <div className="glass-card rounded-3xl p-6">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Cancellation</p>
+                  <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                    Reason: {sel.cancellation_reason}
+                  </p>
+                </div>
+              )}
+              {sel.status_logs && sel.status_logs.length > 0 && (
+                <div className="glass-card rounded-3xl p-6">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Status Log</p>
+                  <div className="space-y-2 max-h-[220px] overflow-auto">
+                    {sel.status_logs.slice().reverse().map((log, idx) => (
+                      <div key={`${log.at}-${idx}`} className="text-xs text-gray-600 border border-gray-100 rounded-xl px-3 py-2">
+                        <span className="font-semibold">{new Date(log.at).toLocaleString()}</span>
+                        {" · "}
+                        {log.from || "—"} {"->"} {log.to}
+                        {log.reason ? ` · ${log.reason}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sel.job_type === "repair" && sel.status === "รอส่งคืน" && !repairToCalRequests.some((r) => r.source_job_id === sel.id) && (
+                <div className="glass-card rounded-3xl p-6 space-y-3">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">ขอสอบเทียบเพิ่มเติม</p>
+                  <p className="text-sm text-gray-600">
+                    สร้างคำขอให้ฝ่าย Calibration (Cal team) รับงาน แล้วค่อยสร้าง job แยกต่างหาก
+                  </p>
+                  <button
+                    onClick={() => requestCalibrationFromRepair(sel)}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl bg-teal-500 hover:bg-teal-600 text-white text-sm font-bold transition-all"
+                  >
+                    <FlaskConical className="h-4 w-4" /> Request ไปฝ่าย Cal
+                  </button>
+                </div>
+              )}
 
               {/* Quotation */}
               {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
-                <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+                <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
                   <div className="flex items-center gap-3">
                     <div className={`px-3 py-1.5 rounded-full text-sm font-bold ${sel.quotation_approved ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
@@ -933,6 +1410,22 @@ export default function ServiceRequestPage() {
                       <div><p className="text-xs text-blue-500">PO Number</p><p className="font-bold font-mono text-blue-800">{sel.po_number}</p></div>
                     </div>
                   )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => updateSelected({ quotation_approved: !sel.quotation_approved })}
+                      className={`py-2.5 rounded-xl text-sm font-semibold border ${
+                        sel.quotation_approved ? "bg-green-50 border-green-200 text-green-700" : "bg-yellow-50 border-yellow-200 text-yellow-700"
+                      }`}
+                    >
+                      {sel.quotation_approved ? "Approved แล้ว" : "รออนุมัติ"}
+                    </button>
+                    <input
+                      value={sel.po_number || ""}
+                      onChange={(e) => updateSelected({ po_number: e.target.value })}
+                      placeholder="กรอก PO Number"
+                      className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                    />
+                  </div>
                   <button onClick={()=>setShowQuoteDialog(true)}
                     className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl bg-purple-500 hover:bg-purple-600 text-white text-sm font-bold transition-all">
                     <FileText className="h-4 w-4" /> สร้าง Draft Quotation
@@ -940,22 +1433,42 @@ export default function ServiceRequestPage() {
                 </div>
               )}
 
+              {sel.job_type === "calibration" && (
+                <div className="glass-card rounded-3xl p-6 space-y-3">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Calibration Certificate</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="date"
+                      value={sel.calibration_date || ""}
+                      onChange={(e) => updateSelected({ calibration_date: e.target.value, due_date: addOneYear(e.target.value) })}
+                      className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                    />
+                    <input
+                      value={sel.due_date || ""}
+                      readOnly
+                      placeholder="Due date (+1 ปี)"
+                      className="px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50 text-sm"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Close */}
               {STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอส่งคืน") && (
-                <div className="bg-white rounded-3xl border border-gray-200 p-6 space-y-3">
+                <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">ปิดงาน</p>
                   <div className="grid grid-cols-3 gap-3">
-                    <div className="p-3 bg-gray-50 rounded-2xl">
+                    <div className="p-3 bg-gray-50 rounded-2xl space-y-1">
                       <p className="text-xs text-gray-400 mb-0.5">Tracking (ออก)</p>
-                      <p className="text-sm font-bold font-mono">{sel.tracking_out || "—"}</p>
+                      <input value={sel.tracking_out || ""} onChange={(e)=>updateSelected({ tracking_out: e.target.value })} className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs font-mono" />
                     </div>
-                    <div className="p-3 bg-gray-50 rounded-2xl">
+                    <div className="p-3 bg-gray-50 rounded-2xl space-y-1">
                       <p className="text-xs text-gray-400 mb-0.5">Invoice No.</p>
-                      <p className="text-sm font-bold">{sel.invoice_no || "—"}</p>
+                      <input value={sel.invoice_no || ""} onChange={(e)=>updateSelected({ invoice_no: e.target.value })} className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs" />
                     </div>
-                    <div className="p-3 bg-gray-50 rounded-2xl">
+                    <div className="p-3 bg-gray-50 rounded-2xl space-y-1">
                       <p className="text-xs text-gray-400 mb-0.5">Warranty</p>
-                      <p className="text-sm font-bold">{sel.warranty_days ? `${sel.warranty_days} วัน` : "—"}</p>
+                      <input value={sel.warranty_days || ""} onChange={(e)=>updateSelected({ warranty_days: e.target.value })} placeholder="จำนวนวัน" className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs" />
                     </div>
                   </div>
                   {sel.status === "ปิดงาน" && (
@@ -982,6 +1495,13 @@ export default function ServiceRequestPage() {
         </div>
       )}
 
+      {/* ── Tab: From Repair ── */}
+      {mainTab === "from_repair_cal" && (
+        <div className="flex-1 overflow-y-auto">
+          <FromRepairCalTab requests={repairToCalRequests} onAccept={acceptRepairToCalRequest} />
+        </div>
+      )}
+
       {/* ── Tab: From SE ── */}
       {mainTab === "from_se" && (
         <div className="flex-1 overflow-y-auto">
@@ -989,8 +1509,24 @@ export default function ServiceRequestPage() {
         </div>
       )}
 
-      {showNew && <NewJobDialog onClose={()=>setShowNew(false)} onSave={j=>{setJobs(p=>[j,...p]);setSelected(j);setMainTab("jobs")}} />}
+      {showNew && <NewJobDialog orgNames={orgNames} onClose={()=>setShowNew(false)} onSave={j=>{
+        setJobs(p=>[{ ...j, source: "manual" },...p]);setSelected(j);setMainTab("jobs")
+        const orgs = readOrganizations([])
+        writeOrganizations(upsertOrganizationByName(orgs, j.customer_org, j.customer_name))
+      }} />}
       {showQuoteDialog && sel && <QuotationDraftDialog job={sel} onClose={()=>setShowQuoteDialog(false)} />}
+      {cancelDialogJob && (
+        <CancelJobDialog
+          job={cancelDialogJob}
+          reason={cancelReason}
+          onReasonChange={setCancelReason}
+          onClose={() => setCancelDialogJob(null)}
+          onConfirm={() => {
+            cancelJob(cancelDialogJob, cancelReason)
+            setCancelDialogJob(null)
+          }}
+        />
+      )}
     </div>
   )
 }

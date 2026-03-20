@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { GitBranch, Plus } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
@@ -16,6 +16,7 @@ import { useToast } from "@/hooks/use-toast"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
+import { readSESettings } from "@/lib/mock/as-store"
 
 interface Deal {
   id: string
@@ -58,13 +59,17 @@ const dealSchema = z.object({
 
 type DealForm = z.infer<typeof dealSchema>
 
-const CUSTOMERS = ["โรงพยาบาลกรุงเทพ", "โรงพยาบาลรามาธิบดี", "โรงพยาบาลศิริราช", "โรงพยาบาลสมิติเวช", "โรงพยาบาลมหาราชนครเชียงใหม่", "คลินิกสุขภาพดี"]
-const OWNERS = ["คุณอนันต์", "คุณนภา", "คุณรัตนา"]
-
 export default function PipelinePage() {
   const [deals, setDeals] = useState<Deal[]>(MOCK_DEALS)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [seSettings, setSESettings] = useState(readSESettings())
   const { toast } = useToast()
+
+  useEffect(() => {
+    const sync = () => setSESettings(readSESettings())
+    window.addEventListener("storage", sync)
+    return () => window.removeEventListener("storage", sync)
+  }, [])
 
   const { register, handleSubmit, setValue, reset, formState: { errors } } = useForm<DealForm>({
     resolver: zodResolver(dealSchema),
@@ -164,7 +169,7 @@ export default function PipelinePage() {
                 <Label>ลูกค้า *</Label>
                 <Select onValueChange={v => setValue("customer_name", v)}>
                   <SelectTrigger><SelectValue placeholder="เลือกลูกค้า" /></SelectTrigger>
-                  <SelectContent>{CUSTOMERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seSettings.se_customers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
@@ -192,7 +197,7 @@ export default function PipelinePage() {
                 <Label>ผู้รับผิดชอบ</Label>
                 <Select onValueChange={v => setValue("owner", v)}>
                   <SelectTrigger><SelectValue placeholder="เลือก SE" /></SelectTrigger>
-                  <SelectContent>{OWNERS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seSettings.se_owners.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             </div>

@@ -1,9 +1,11 @@
 "use client"
 
 import { Users, Package, Wrench, GitBranch, AlertTriangle, Clock, TrendingUp, CheckCircle } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatCurrency } from "@/lib/utils"
+import { readStockItems, type ASStockSnapshotItem } from "@/lib/mock/as-store"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line
@@ -47,6 +49,33 @@ const PRIORITY_COLORS: Record<string, string> = {
 }
 
 export default function DashboardPage() {
+  const [stockItems, setStockItems] = useState<ASStockSnapshotItem[]>([])
+
+  useEffect(() => {
+    const sync = () => {
+      setStockItems(readStockItems([]))
+    }
+    sync()
+    window.addEventListener("storage", sync)
+    const timer = window.setInterval(sync, 1200)
+    return () => {
+      window.removeEventListener("storage", sync)
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const stockAging = useMemo(() => {
+    const today = new Date()
+    return stockItems
+      .filter((i) => i.status === "in_stock" && i.qty > 0 && i.stocked_at)
+      .map((i) => {
+        const entered = new Date(`${i.stocked_at}T00:00:00`)
+        const diff = Math.max(0, Math.floor((today.getTime() - entered.getTime()) / (1000 * 60 * 60 * 24)))
+        return { ...i, aging_days: diff }
+      })
+      .sort((a, b) => b.aging_days - a.aging_days)
+  }, [stockItems])
+
   return (
     <div>
       <div className="mb-6">
@@ -195,6 +224,34 @@ export default function DashboardPage() {
                 </div>
               </div>
             ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Package className="h-4 w-4" /> Stock Aging (Oldest First)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {stockAging.length === 0 ? (
+              <p className="text-sm text-muted-foreground">ยังไม่มีข้อมูลอายุสินค้าใน Stock</p>
+            ) : (
+              stockAging.slice(0, 8).map((item) => (
+                <div key={item.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{item.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.serial_number ? `SN: ${item.serial_number} · ` : ""}
+                      In stock since {item.stocked_at}
+                    </p>
+                  </div>
+                  <Badge variant={item.aging_days >= 180 ? "destructive" : "secondary"}>
+                    {item.aging_days} days
+                  </Badge>
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
       </div>

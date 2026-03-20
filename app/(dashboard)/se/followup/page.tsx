@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Bell, Plus, Search, CheckCircle, Clock, XCircle } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { FollowupStatusBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
+import { readSESettings } from "@/lib/mock/as-store"
 
 interface Followup {
   id: string
@@ -49,8 +50,6 @@ const followupSchema = z.object({
 
 type FollowupForm = z.infer<typeof followupSchema>
 
-const CUSTOMERS = ["โรงพยาบาลกรุงเทพ", "โรงพยาบาลรามาธิบดี", "โรงพยาบาลศิริราช", "โรงพยาบาลสมิติเวช", "โรงพยาบาลมหาราชนครเชียงใหม่", "คลินิกสุขภาพดี"]
-const OWNERS = ["คุณอนันต์", "คุณนภา", "คุณรัตนา"]
 const today = new Date().toISOString().split("T")[0]
 
 export default function FollowupPage() {
@@ -59,7 +58,14 @@ export default function FollowupPage() {
   const [filterStatus, setFilterStatus] = useState("all")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Followup | null>(null)
+  const [seSettings, setSESettings] = useState(readSESettings())
   const { toast } = useToast()
+
+  useEffect(() => {
+    const sync = () => setSESettings(readSESettings())
+    window.addEventListener("storage", sync)
+    return () => window.removeEventListener("storage", sync)
+  }, [])
 
   const { register, handleSubmit, setValue, reset } = useForm<FollowupForm>({
     resolver: zodResolver(followupSchema),
@@ -230,7 +236,7 @@ export default function FollowupPage() {
                 <Label>ลูกค้า *</Label>
                 <Select onValueChange={v => setValue("customer_name", v)} defaultValue={editTarget?.customer_name}>
                   <SelectTrigger><SelectValue placeholder="เลือกลูกค้า" /></SelectTrigger>
-                  <SelectContent>{CUSTOMERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seSettings.se_customers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
@@ -245,7 +251,7 @@ export default function FollowupPage() {
                 <Label>ผู้รับผิดชอบ *</Label>
                 <Select onValueChange={v => setValue("owner", v)} defaultValue={editTarget?.owner}>
                   <SelectTrigger><SelectValue placeholder="เลือก SE" /></SelectTrigger>
-                  <SelectContent>{OWNERS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seSettings.se_owners.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               {editTarget && (
