@@ -11,6 +11,9 @@ Middleware bypasses auth when `NEXT_PUBLIC_SUPABASE_URL === "your-supabase-url"`
 `lib/supabase/client.ts` returns placeholder client in dev mode.
 App goes directly to `/dashboard` without login.
 
+### Hydration (SSR vs client)
+- For dates/times in Client Components that SSR, use `lib/format-th-datetime.ts` — `formatThDateTime(iso)` and `formatThDateFromYMD("YYYY-MM-DD")` with fixed `th-TH` + `Asia/Bangkok`. Avoid bare `toLocaleString()` / ambiguous `new Date("YYYY-MM-DDTHH:mm:ss")` (no `Z`) so server HTML matches the browser.
+
 ## Design Principles
 - Apple-style UI: clean, white, rounded-3xl cards, generous whitespace
 - Accent: blue-500 primary, violet for One-QA, emerald for Existing, amber for New
@@ -70,9 +73,18 @@ App goes directly to `/dashboard` without login.
 - Sellable: In Stock → Reserved (Sales books) → Sold
 - Demo: In Stock → On Loan → [Sales books] → Reserved → Sold
   - Demo can also go: On Loan → return → In Stock
+- **Loan rules (Stock UI):** **Demo** (`category === demo`) → ยืมออกได้ทันที (Quick Action **Loan (Demo)**) · สินค้าที่**ไม่ใช่ Demo** → ต้อง **ขออนุมัติยืม** แล้วผู้อนุมัติกด **อนุมัติการยืม** ก่อนจึงจะกด **Loan** ได้ · หลังยืมออก / คืน / ตัดขาย จะล้าง `loan_approval_*` (mock: ผู้อนุมัติ = ผู้ใช้เดียวกับ Stock)
 - RMA out: deducted from stock temporarily (not counted while overseas)
 **Alerts:** Min stock per item → alert Admin
 **Stock counting:** monthly, quarterly, on-demand → record variance + note
+
+**Calibration Proactive (registry + jobs):**
+- **Store:** `as_proactive_calibration_assets` — helpers in `lib/mock/as-store.ts`
+- **What populates the registry (current code):**
+  1. **Input Product (Stock)** — every distinct SN on the receive transaction (main + IDA6 modules + companion SNs) is upserted with `last_calibration_date` = **equipment Cal date** if entered, else receive date; `due_date` = that date **+ 1 year**; `customer_org` placeholder `Stock — Input Product`. The same Cal date is stored on the stock line when provided.
+  2. **Calibration Proactive page** (`/as/calibration-proactive`) — manual add + seed list; **Create Cal job** spawns a Service job with `source: "proactive"` and `source_dispatch_id` = asset id (linked from Service Request via `?proactive_id=`).
+- **Removed for now:** Quick Action “sell demo + proactive calibration” (may be reintroduced later).
+- **Future (not built yet):** Receive path where equipment goes **straight to Repair/Calibration** without sitting on “real” stock counts; “real” stock views may filter by **category** only so loaner/repair-intake lines do not mix with sellable inventory.
 
 ### Finance / Billing
 - Invoice per job, Payment status, Track outstanding per job

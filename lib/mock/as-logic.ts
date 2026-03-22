@@ -37,7 +37,9 @@ export function getTransitionBlockReason(job: ASServiceJob): string | null {
 
 export function getSlaLimitDays(job: ASServiceJob) {
   if (job.routing === "overseas") return 60
-  return job.job_type === "calibration" ? 30 : 14
+  if (job.job_type === "calibration") return 30
+  if (job.job_type === "commissioning") return 14
+  return 14
 }
 
 export function getAgingDays(job: ASServiceJob) {

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
-import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users } from "lucide-react"
+import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users, ClipboardCheck } from "lucide-react"
 import {
   readASWorkflowSettings,
   readIncomingSERequests,
@@ -10,6 +10,7 @@ import {
   readRepairToCalRequests,
   readOrganizations,
   readStockDispatches,
+  appendStockDispatchHistory,
   appendRepairToCalRequest,
   removeIncomingSERequest,
   removeRepairToCalRequest,
@@ -24,12 +25,23 @@ import {
   type ASOrganization,
 } from "@/lib/mock/as-store"
 import { STATUS_FLOW, getSlaState, getTransitionBlockReason, getCalibrationAlertLevel } from "@/lib/mock/as-logic"
+import { formatThDateTime } from "@/lib/format-th-datetime"
 
-type JobType = "repair" | "calibration"
+type JobType = "repair" | "calibration" | "commissioning"
 type Priority = "urgent" | "high" | "normal"
 type Routing = "in_country" | "overseas"
-type MainTab = "jobs" | "from_stock" | "from_se" | "from_repair_cal"
-const QC_STATUS_FLOW: ServiceJob["status"][] = ["รอประเมิน", "QC", "รอส่งคืน", "ปิดงาน"]
+type MainTab = "jobs" | "commissioning" | "from_stock" | "from_se" | "from_repair_cal"
+/** งาน Commissioning Test (รับเข้า / ตรวจเช็คก่อนเข้า Stock) — ไม่ใช่ Calibration ทั่วไป */
+const COMMISSIONING_STATUS_FLOW: ServiceJob["status"][] = ["รอประเมิน", "QC", "รอส่งคืน", "ปิดงาน"]
+
+function isCommissioningTestJob(job: ServiceJob): boolean {
+  if (job.job_type === "commissioning") return true
+  if (job.source === "stock" && job.job_type === "calibration") {
+    const s = job.symptom_reported
+    return s.includes("QC ก่อนเข้า Stock") || s.includes("Commissioning Test")
+  }
+  return false
+}
 
 // Store-backed types are imported from lib/mock/as-store
 
@@ -39,13 +51,17 @@ type SERequest = ASIncomingSERequest
 function CancelJobDialog({
   job,
   reason,
+  actionPlan,
   onReasonChange,
+  onActionPlanChange,
   onClose,
   onConfirm,
 }: {
   job: ServiceJob
   reason: string
+  actionPlan: string
   onReasonChange: (value: string) => void
+  onActionPlanChange: (value: string) => void
   onClose: () => void
   onConfirm: () => void
 }) {
@@ -68,9 +84,18 @@ function CancelJobDialog({
         <textarea
           value={reason}
           onChange={(e) => onReasonChange(e.target.value)}
-          rows={4}
+          rows={3}
           className={`${inp} resize-none`}
           placeholder="ระบุเหตุผล เช่น ลูกค้ายกเลิก, ข้อมูลผิดพลาด, รวมงานกับใบงานอื่น"
+        />
+        <label className="block text-sm font-medium text-gray-700 mb-1.5 mt-3">Action Plan การแก้ไข / ขั้นตอนถัดไป *</label>
+        <p className="text-xs text-gray-500 mb-1.5">ระบุว่าจะดำเนินการอย่างไรต่อ เช่น แจ้งลูกค้า, ส่งคืน Stock, เปิดงานใหม่, ติดตามอะไหล่</p>
+        <textarea
+          value={actionPlan}
+          onChange={(e) => onActionPlanChange(e.target.value)}
+          rows={3}
+          className={`${inp} resize-none`}
+          placeholder="เช่น แจ้ง SE ปิดใบงาน · คืนเครื่องเข้า Stock แถว X · นัดลูกค้าใหม่วันที่ ..."
         />
         <div className="flex gap-3 mt-4">
           <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
@@ -79,7 +104,7 @@ function CancelJobDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={!reason.trim()}
+            disabled={!reason.trim() || !actionPlan.trim()}
             className="flex-1 py-2.5 rounded-xl bg-red-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-red-600"
           >
             ยืนยันยกเลิกงาน
@@ -228,12 +253,13 @@ function Pill({ label, color }: { label: string; color: string }) {
 // ── Job Card ─────────────────────────────────────────────────────────────────
 function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolean; onClick: () => void }) {
   const priorityColor = job.priority === "urgent" ? "bg-red-100 text-red-700" : job.priority === "high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-500"
+  const ct = isCommissioningTestJob(job)
   return (
     <button onClick={onClick} className={`w-full text-left p-4 rounded-2xl border transition-all backdrop-blur ${selected ? "bg-blue-50/85 border-blue-300 shadow-sm" : "bg-white/75 border-white/70 hover:border-blue-200 hover:shadow-[0_10px_24px_rgba(59,130,246,0.15)]"}`}>
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <span className={`p-1 rounded-lg ${job.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"}`}>
-            {job.job_type === "repair" ? <Wrench className="h-3 w-3 text-blue-600" /> : <FlaskConical className="h-3 w-3 text-teal-600" />}
+          <span className={`p-1 rounded-lg ${ct ? "bg-amber-100" : job.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"}`}>
+            {ct ? <ClipboardCheck className="h-3 w-3 text-amber-700" /> : job.job_type === "repair" ? <Wrench className="h-3 w-3 text-blue-600" /> : <FlaskConical className="h-3 w-3 text-teal-600" />}
           </span>
           <span className="text-xs font-mono text-gray-500">{job.job_no}</span>
         </div>
@@ -344,11 +370,19 @@ function NewJobDialog({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className={lbl}>ประเภทงาน</label>
-              <div className="flex gap-2">
-                {(["repair","calibration"] as JobType[]).map(t => (
+              <div className="flex flex-wrap gap-2">
+                {(["repair","calibration","commissioning"] as JobType[]).map(t => (
                   <button key={t} type="button" onClick={() => setForm(f=>({...f,job_type:t}))}
-                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border-2 transition-all ${form.job_type===t ? t==="repair" ? "border-blue-500 bg-blue-50 text-blue-700" : "border-teal-500 bg-teal-50 text-teal-700" : "border-gray-200 text-gray-500"}`}>
-                    {t==="repair" ? "🔧 Repair" : "📐 Calibration"}
+                    className={`flex-1 min-w-[100px] py-2.5 rounded-xl text-xs font-semibold border-2 transition-all ${
+                      form.job_type===t
+                        ? t==="repair"
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
+                          : t==="calibration"
+                            ? "border-teal-500 bg-teal-50 text-teal-700"
+                            : "border-amber-500 bg-amber-50 text-amber-800"
+                        : "border-gray-200 text-gray-500"
+                    }`}>
+                    {t==="repair" ? "🔧 Repair" : t==="calibration" ? "📐 Cal" : "✅ Comm. Test"}
                   </button>
                 ))}
               </div>
@@ -478,10 +512,15 @@ function NewJobDialog({
 interface QuoteLine { id: string; description: string; amount: number }
 
 function QuotationDraftDialog({ job, onClose }: { job: ServiceJob; onClose: () => void }) {
-  const [quoteName, setQuoteName] = useState(`ใบเสนอราคา${job.job_type === "repair" ? "ซ่อม" : "สอบเทียบ"} ${job.model}`)
+  const quoteKind = isCommissioningTestJob(job)
+    ? "Commissioning Test"
+    : job.job_type === "repair"
+      ? "ซ่อม"
+      : "สอบเทียบ"
+  const [quoteName, setQuoteName] = useState(`ใบเสนอราคา${quoteKind} ${job.model}`)
   const [customerName, setCustomerName] = useState(job.customer_org)
   const [lines, setLines] = useState<QuoteLine[]>([
-    { id:"1", description:`ค่าแรง${job.job_type === "repair" ? "ซ่อม" : "สอบเทียบ"} ${job.model}`, amount:0 },
+    { id:"1", description:`ค่าแรง${quoteKind} ${job.model}`, amount:0 },
     { id:"2", description:"ค่าอะไหล่", amount:0 },
   ])
   const [costInternal, setCostInternal] = useState(0)
@@ -613,8 +652,16 @@ function FromStockTab({
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <span className={`p-1.5 rounded-lg ${d.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"}`}>
-                  {d.job_type === "repair" ? <Wrench className="h-3.5 w-3.5 text-blue-600" /> : <FlaskConical className="h-3.5 w-3.5 text-teal-600" />}
+                <span className={`p-1.5 rounded-lg ${
+                  d.job_type === "commissioning" ? "bg-amber-100" : d.job_type === "repair" ? "bg-blue-100" : "bg-teal-100"
+                }`}>
+                  {d.job_type === "commissioning" ? (
+                    <ClipboardCheck className="h-3.5 w-3.5 text-amber-700" />
+                  ) : d.job_type === "repair" ? (
+                    <Wrench className="h-3.5 w-3.5 text-blue-600" />
+                  ) : (
+                    <FlaskConical className="h-3.5 w-3.5 text-teal-600" />
+                  )}
                 </span>
                 <p className="font-bold text-gray-900">{d.item_name}</p>
               </div>
@@ -649,6 +696,116 @@ function FromStockTab({
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Commissioning Test Tab (รับเข้า / ตรวจเช็ค — แยกจาก Calibration) ─────────
+function CommissioningWorkTab({
+  dispatches,
+  jobs,
+  onAcceptDispatch,
+  onOpenJob,
+}: {
+  dispatches: StockDispatch[]
+  jobs: ServiceJob[]
+  onAcceptDispatch: (d: StockDispatch) => void
+  onOpenJob: (j: ServiceJob) => void
+}) {
+  const pending = dispatches.filter((d) => d.job_type === "commissioning")
+  const activeJobs = jobs
+    .filter((j) => isCommissioningTestJob(j))
+    .filter((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
+
+  return (
+    <div className="space-y-10">
+      <section>
+        <div className="flex items-center gap-2 mb-3">
+          <ClipboardCheck className="h-5 w-5 text-amber-600" />
+          <h2 className="text-base font-bold text-gray-900">รอรับจาก Stock — Commissioning Test</h2>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">
+          เครื่องที่รับเข้าเพื่อตรวจเช็คก่อนเข้าคลัง (ไม่ใช่งานสอบเทียบ Calibration) จะวิ่งมาที่แท็บนี้และ Service Request
+        </p>
+        {pending.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-gray-300 border border-dashed border-amber-200 rounded-3xl bg-amber-50/40">
+            <Inbox className="h-12 w-12 mb-2 opacity-40" />
+            <p className="text-sm text-gray-500">ไม่มีงาน Commissioning Test รอรับจาก Stock</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {pending.map((d) => (
+              <div key={d.id} className="bg-white rounded-3xl border border-amber-200 p-5 shadow-sm">
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="p-1.5 rounded-lg bg-amber-100">
+                        <ClipboardCheck className="h-3.5 w-3.5 text-amber-700" />
+                      </span>
+                      <p className="font-bold text-gray-900">{d.item_name}</p>
+                    </div>
+                    <p className="font-mono text-xs text-amber-700 ml-8">SN: {d.serial_number}</p>
+                  </div>
+                  <span className="shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900">Commissioning Test</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="p-3 bg-gray-50 rounded-2xl">
+                    <p className="text-xs text-gray-400 mb-0.5 flex items-center gap-1"><Building2 className="h-3 w-3" /> หน่วยงาน</p>
+                    <p className="text-sm font-semibold text-gray-900">{d.customer_org}</p>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-2xl">
+                    <p className="text-xs text-gray-400 mb-0.5 flex items-center gap-1"><User className="h-3 w-3" /> ผู้ติดต่อ</p>
+                    <p className="text-sm font-semibold text-gray-900">{d.customer_contact || "—"}</p>
+                  </div>
+                </div>
+                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-100 mb-4">
+                  <p className="text-xs text-amber-800 mb-1 font-semibold">รายละเอียดการตรวจเช็ค</p>
+                  <p className="text-sm text-gray-800">{d.symptom}</p>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-gray-400">
+                    ส่งโดย <span className="font-semibold text-gray-600">{d.dispatched_by}</span> · {d.dispatched_at}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onAcceptDispatch(d)}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-sm font-bold transition-colors"
+                  >
+                    <CheckCircle2 className="h-4 w-4" /> รับงาน
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-base font-bold text-gray-900 mb-1">งาน Commissioning Test ที่กำลังดำเนินการ</h2>
+        <p className="text-sm text-gray-500 mb-4">กดรายการเพื่อไปดูรายละเอียดในแท็บ &quot;งานทั้งหมด&quot;</p>
+        {activeJobs.length === 0 ? (
+          <p className="text-sm text-gray-400 py-8 text-center border border-gray-100 rounded-2xl">ไม่มีงานที่เปิดอยู่</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {activeJobs.map((j) => (
+              <button
+                key={j.id}
+                type="button"
+                onClick={() => onOpenJob(j)}
+                className="text-left p-4 rounded-2xl border border-amber-100 bg-white hover:border-amber-300 hover:shadow-sm transition-all"
+              >
+                <p className="text-xs font-mono text-gray-500">{j.job_no}</p>
+                <p className="font-bold text-sm text-gray-900 mt-1">{j.model}</p>
+                <p className="text-xs text-gray-500 font-mono mt-0.5">SN: {j.serial_number}</p>
+                <div className="mt-2 flex items-center justify-between">
+                  <Pill label={j.status} color={STATUS_COLORS[j.status]} />
+                  <span className="text-xs text-gray-400">{j.customer_org}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
@@ -819,6 +976,7 @@ export default function ServiceRequestPage() {
   const [statusFlow, setStatusFlow] = useState<ServiceJob["status"][]>(STATUS_FLOW)
   const [cancelDialogJob, setCancelDialogJob] = useState<ServiceJob | null>(null)
   const [cancelReason, setCancelReason] = useState("")
+  const [cancelActionPlan, setCancelActionPlan] = useState("")
 
   useEffect(() => {
     const loadedJobs = readJobs(MOCK_JOBS)
@@ -876,6 +1034,14 @@ export default function ServiceRequestPage() {
     }
   }, [hydrated])
 
+  const commissioningTabBadge = useMemo(() => {
+    const pending = stockDispatches.filter((d) => d.job_type === "commissioning").length
+    const open = jobs.filter(
+      (j) => isCommissioningTestJob(j) && j.status !== "ปิดงาน" && j.status !== "ยกเลิก",
+    ).length
+    return pending + open
+  }, [stockDispatches, jobs])
+
   const totalIncoming = stockDispatches.length + seRequests.length + repairToCalRequests.length
 
   const filtered = jobs.filter(j => {
@@ -898,15 +1064,21 @@ export default function ServiceRequestPage() {
     setSelected(updated)
   }
 
-  function cancelJob(job: ServiceJob, reason: string) {
-    if (!reason || !reason.trim()) return
+  function cancelJob(job: ServiceJob, reason: string, actionPlan: string) {
+    if (!reason?.trim() || !actionPlan?.trim()) return
     const updated: ServiceJob = {
       ...job,
       status: "ยกเลิก",
       cancellation_reason: reason.trim(),
+      cancellation_action_plan: actionPlan.trim(),
       status_logs: [
         ...(job.status_logs || []),
-        { at: new Date().toISOString(), from: job.status, to: "ยกเลิก", reason: reason.trim() },
+        {
+          at: new Date().toISOString(),
+          from: job.status,
+          to: "ยกเลิก",
+          reason: `${reason.trim()} | Action Plan: ${actionPlan.trim()}`,
+        },
       ],
     }
     setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
@@ -914,20 +1086,12 @@ export default function ServiceRequestPage() {
   }
 
   function canAdvance(job: ServiceJob) {
-    if (isQCJob(job)) return job.status !== "ปิดงาน" && job.status !== "ยกเลิก"
+    if (isCommissioningTestJob(job)) return job.status !== "ปิดงาน" && job.status !== "ยกเลิก"
     return !getTransitionBlockReason(job)
   }
 
-  function isQCJob(job: ServiceJob) {
-    return (
-      job.source === "stock" &&
-      job.job_type === "calibration" &&
-      job.symptom_reported.includes("QC ก่อนเข้า Stock")
-    )
-  }
-
   function getJobFlow(job: ServiceJob) {
-    if (isQCJob(job)) return QC_STATUS_FLOW
+    if (isCommissioningTestJob(job)) return COMMISSIONING_STATUS_FLOW
     return statusFlow.length > 0 ? statusFlow : STATUS_FLOW
   }
 
@@ -937,14 +1101,26 @@ export default function ServiceRequestPage() {
     const idx = flow.indexOf(job.status)
     if (idx < flow.length - 1) {
       const next = flow[idx + 1]
-      const skip = !isQCJob(job) && next === "รอ Quotation Approve" && !job.requires_approval
+      const skip = !isCommissioningTestJob(job) && next === "รอ Quotation Approve" && !job.requires_approval
       const actualNext: ServiceJob["status"] = skip ? (flow[idx + 2] ?? next) : next
+      const stockCloseExtras: Partial<ServiceJob> =
+        actualNext === "ปิดงาน" && job.source === "stock"
+          ? { stock_return_pending: true }
+          : {}
       const updated: ServiceJob = {
         ...job,
+        ...stockCloseExtras,
         status: actualNext,
         status_logs: [
           ...(job.status_logs || []),
-          { at: new Date().toISOString(), from: job.status, to: actualNext },
+          {
+            at: new Date().toISOString(),
+            from: job.status,
+            to: actualNext,
+            ...(actualNext === "ปิดงาน" && job.source === "stock"
+              ? { reason: "ปิดงานโดย Service — รอ Stock รับเข้าคลัง" }
+              : {}),
+          },
         ],
       }
       setJobs(prev => prev.map(j => j.id === job.id ? updated : j))
@@ -987,12 +1163,33 @@ export default function ServiceRequestPage() {
       requires_approval: true,
       source: "stock",
       source_dispatch_id: d.id,
+      stock_item_id: d.stock_item_id,
       due_date: d.due_date,
       status_logs: [{ at: new Date().toISOString(), to: "รอประเมิน", reason: `Accepted from Stock (${d.id})` }],
       created_at: new Date().toISOString().split("T")[0],
     }
     const nextJobs = [newJob, ...jobs]
     const nextDispatches = stockDispatches.filter((x) => x.id !== d.id)
+    const nowIso = new Date().toISOString()
+    appendStockDispatchHistory({
+      dispatch_id: d.id,
+      stock_item_id: d.stock_item_id,
+      item_name: d.item_name,
+      manufacturer: d.manufacturer,
+      model: d.model,
+      serial_number: d.serial_number,
+      customer_org: d.customer_org,
+      customer_contact: d.customer_contact,
+      symptom: d.symptom,
+      job_type: d.job_type,
+      routing: d.routing,
+      due_date: d.due_date,
+      dispatched_by: d.dispatched_by,
+      dispatched_at: d.dispatched_at,
+      accepted_at: nowIso,
+      service_job_id: newJob.id,
+      service_job_no: newJob.job_no,
+    })
     // Persist both sides immediately to avoid race with polling/event sync.
     writeJobs(nextJobs)
     writeStockDispatches(nextDispatches)
@@ -1143,6 +1340,7 @@ export default function ServiceRequestPage() {
 
   const MAIN_TABS: { id: MainTab; label: string; badge?: number }[] = [
     { id: "jobs", label: "งานทั้งหมด" },
+    { id: "commissioning", label: "Commissioning Test", badge: commissioningTabBadge },
     { id: "from_stock", label: "รับงานจาก Stock", badge: stockDispatches.length },
     { id: "from_se", label: "คำขอจาก SE", badge: seRequests.length },
     { id: "from_repair_cal", label: "คำขอ Cal จาก Repair", badge: repairToCalRequests.length },
@@ -1152,7 +1350,7 @@ export default function ServiceRequestPage() {
     <div className="h-full flex flex-col relative z-10 p-1">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">งาน Repair & Calibration</h1>
+          <h1 className="text-2xl font-bold text-gray-900">งาน Repair, Calibration & Commissioning Test</h1>
           <p className="text-sm text-gray-500 mt-0.5">{jobs.length} งานทั้งหมด · {jobs.filter(j=>j.status!=="ปิดงาน").length} งานที่ยังเปิดอยู่</p>
         </div>
         <button onClick={() => setShowNew(true)} className="modern-button-primary premium-glow rounded-2xl">
@@ -1161,7 +1359,7 @@ export default function ServiceRequestPage() {
       </div>
 
       {/* Notification Banner */}
-      {(totalIncoming > 0 || overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && (
+      {(totalIncoming > 0 || commissioningTabBadge > 0 || overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && (
         <div className="glass-panel flex items-center gap-3 p-4 rounded-2xl mb-4">
           <Bell className="h-5 w-5 text-amber-500 shrink-0" />
           <p className="text-sm text-amber-800 font-semibold flex-1">
@@ -1175,7 +1373,13 @@ export default function ServiceRequestPage() {
                 {repairToCalRequests.length > 0 && <span className="text-emerald-600">{repairToCalRequests.length} คำขอ Cal จาก Repair</span>}
               </>
             )}
-            {totalIncoming > 0 && (overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && " · "}
+            {commissioningTabBadge > 0 && (
+              <>
+                {totalIncoming > 0 && " · "}
+                <span className="text-amber-800">{commissioningTabBadge} Commissioning Test (รับเข้า/ดำเนินการ)</span>
+              </>
+            )}
+            {(totalIncoming > 0 || commissioningTabBadge > 0) && (overdueCount > 0 || warningCount > 0 || calibrationAlertCount > 0) && " · "}
             {overdueCount > 0 && <span className="text-red-600">{overdueCount} งานเกิน SLA</span>}
             {overdueCount > 0 && warningCount > 0 && " · "}
             {warningCount > 0 && <span className="text-orange-600">{warningCount} งานใกล้ชน SLA</span>}
@@ -1199,6 +1403,15 @@ export default function ServiceRequestPage() {
                 className="px-3 py-1.5 rounded-xl bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600 transition-colors"
               >
                 ดูคำขอ Cal
+              </button>
+            )}
+            {commissioningTabBadge > 0 && (
+              <button
+                type="button"
+                onClick={() => setMainTab("commissioning")}
+                className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 transition-colors"
+              >
+                Commissioning Test
               </button>
             )}
           </div>
@@ -1234,7 +1447,7 @@ export default function ServiceRequestPage() {
               <input value={search} onChange={e=>setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-2xl border border-white/70 focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm bg-white/70 backdrop-blur" placeholder="ค้นหา job / model / SN" />
             </div>
             <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
-              {([["all","ทั้งหมด"],["repair","Repair"],["calibration","Cal"]] as ["all"|JobType, string][]).map(([v,l])=>(
+              {([["all","ทั้งหมด"],["repair","Repair"],["calibration","Cal"],["commissioning","Comm. Test"]] as ["all"|JobType, string][]).map(([v,l])=>(
                 <button key={v} onClick={()=>setFilterType(v)} className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${filterType===v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
               ))}
             </div>
@@ -1263,10 +1476,21 @@ export default function ServiceRequestPage() {
               <div className="glass-card rounded-3xl p-6">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${sel.job_type==="repair" ? "bg-blue-100 text-blue-700" : "bg-teal-100 text-teal-700"}`}>
-                        {sel.job_type==="repair" ? <Wrench className="h-3.5 w-3.5" /> : <FlaskConical className="h-3.5 w-3.5" />}
-                        {sel.job_type==="repair" ? "Repair" : "Calibration"}
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${
+                        isCommissioningTestJob(sel)
+                          ? "bg-amber-100 text-amber-900"
+                          : sel.job_type==="repair"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-teal-100 text-teal-700"
+                      }`}>
+                        {isCommissioningTestJob(sel) ? (
+                          <><ClipboardCheck className="h-3.5 w-3.5" /> Commissioning Test</>
+                        ) : sel.job_type==="repair" ? (
+                          <><Wrench className="h-3.5 w-3.5" /> Repair</>
+                        ) : (
+                          <><FlaskConical className="h-3.5 w-3.5" /> Calibration</>
+                        )}
                       </span>
                       <span className={`px-3 py-1 rounded-full text-sm font-bold ${sel.priority==="urgent" ? "bg-red-100 text-red-700" : sel.priority==="high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-600"}`}>
                         {sel.priority==="urgent" ? "⚡ เร่งด่วน" : sel.priority==="high" ? "↑ สำคัญ" : "ปกติ"}
@@ -1295,12 +1519,13 @@ export default function ServiceRequestPage() {
                       >
                         เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
                       </button>
-                      {!canAdvance(sel) && !isQCJob(sel) && (
+                      {!canAdvance(sel) && !isCommissioningTestJob(sel) && (
                         <p className="text-xs text-red-500 text-right">{getTransitionBlockReason(sel)}</p>
                       )}
                       <button
                         onClick={() => {
                           setCancelReason(sel.cancellation_reason || "")
+                          setCancelActionPlan(sel.cancellation_action_plan || "")
                           setCancelDialogJob(sel)
                         }}
                         className="px-3 py-1.5 rounded-xl bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100"
@@ -1424,11 +1649,16 @@ export default function ServiceRequestPage() {
                 </div>
               </div>
               {sel.cancellation_reason && (
-                <div className="glass-card rounded-3xl p-6">
-                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Cancellation</p>
+                <div className="glass-card rounded-3xl p-6 space-y-2">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">ยกเลิกงาน</p>
                   <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
-                    Reason: {sel.cancellation_reason}
+                    เหตุผล: {sel.cancellation_reason}
                   </p>
+                  {sel.cancellation_action_plan && (
+                    <p className="text-sm text-amber-900 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+                      Action Plan: {sel.cancellation_action_plan}
+                    </p>
+                  )}
                 </div>
               )}
               {sel.status_logs && sel.status_logs.length > 0 && (
@@ -1437,7 +1667,7 @@ export default function ServiceRequestPage() {
                   <div className="space-y-2 max-h-[220px] overflow-auto">
                     {sel.status_logs.slice().reverse().map((log, idx) => (
                       <div key={`${log.at}-${idx}`} className="text-xs text-gray-600 border border-gray-100 rounded-xl px-3 py-2">
-                        <span className="font-semibold">{new Date(log.at).toLocaleString()}</span>
+                        <span className="font-semibold">{formatThDateTime(log.at)}</span>
                         {" · "}
                         {log.from || "—"} {"->"} {log.to}
                         {log.reason ? ` · ${log.reason}` : ""}
@@ -1463,7 +1693,7 @@ export default function ServiceRequestPage() {
               )}
 
               {/* Quotation */}
-              {!isQCJob(sel) && STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
+              {!isCommissioningTestJob(sel) && STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
                   <div className="flex items-center gap-3">
@@ -1501,7 +1731,7 @@ export default function ServiceRequestPage() {
                 </div>
               )}
 
-              {sel.job_type === "calibration" && (
+              {sel.job_type === "calibration" && !isCommissioningTestJob(sel) && (
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Calibration Certificate</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -1539,12 +1769,30 @@ export default function ServiceRequestPage() {
                       <input value={sel.warranty_days || ""} onChange={(e)=>updateSelected({ warranty_days: e.target.value })} placeholder="จำนวนวัน" className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs" />
                     </div>
                   </div>
-                  {sel.status === "ปิดงาน" && (
-                    <div className="flex items-center gap-2 p-3 bg-green-50 rounded-2xl border border-green-200">
-                      <CheckCircle2 className="h-5 w-5 text-green-600" />
-                      <p className="text-sm font-bold text-green-800">งานปิดแล้ว</p>
-                    </div>
-                  )}
+                  {sel.status === "ปิดงาน" &&
+                    (sel.source === "stock" && sel.stock_return_pending ? (
+                      <div className="flex items-start gap-2 p-3 bg-amber-50 rounded-2xl border border-amber-200">
+                        <Clock className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-bold text-amber-900">รอ Stock รับเข้าคลัง</p>
+                          <p className="text-xs text-amber-800 mt-1">
+                            งานปิดทาง Service แล้ว — ฝ่ายคลังต้องกดยืนยันรับสินค้าเพื่อสถานะพร้อมจำหน่าย (หน้า Stock)
+                          </p>
+                        </div>
+                      </div>
+                    ) : sel.source === "stock" && sel.stock_return_received_at ? (
+                      <div className="flex items-center gap-2 p-3 bg-emerald-50 rounded-2xl border border-emerald-200">
+                        <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                        <p className="text-sm font-bold text-emerald-800">
+                          Stock รับเข้าคลังแล้ว ({formatThDateTime(sel.stock_return_received_at)})
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 p-3 bg-green-50 rounded-2xl border border-green-200">
+                        <CheckCircle2 className="h-5 w-5 text-green-600" />
+                        <p className="text-sm font-bold text-green-800">งานปิดแล้ว</p>
+                      </div>
+                    ))}
                 </div>
               )}
             </div>
@@ -1553,6 +1801,24 @@ export default function ServiceRequestPage() {
               <div className="text-center"><Wrench className="h-16 w-16 mx-auto mb-3 opacity-20" /><p className="text-sm">เลือกงานเพื่อดูรายละเอียด</p></div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Tab: Commissioning Test ── */}
+      {mainTab === "commissioning" && (
+        <div className="flex-1 overflow-y-auto">
+          <CommissioningWorkTab
+            dispatches={stockDispatches}
+            jobs={jobs}
+            onAcceptDispatch={acceptStockDispatch}
+            onOpenJob={(j) => {
+              setSelected(j)
+              setMainTab("jobs")
+              setFilterType("commissioning")
+              setSearch("")
+              setFilterStatus("ทั้งหมด")
+            }}
+          />
         </div>
       )}
 
@@ -1587,11 +1853,17 @@ export default function ServiceRequestPage() {
         <CancelJobDialog
           job={cancelDialogJob}
           reason={cancelReason}
+          actionPlan={cancelActionPlan}
           onReasonChange={setCancelReason}
-          onClose={() => setCancelDialogJob(null)}
-          onConfirm={() => {
-            cancelJob(cancelDialogJob, cancelReason)
+          onActionPlanChange={setCancelActionPlan}
+          onClose={() => {
             setCancelDialogJob(null)
+            setCancelActionPlan("")
+          }}
+          onConfirm={() => {
+            cancelJob(cancelDialogJob, cancelReason, cancelActionPlan)
+            setCancelDialogJob(null)
+            setCancelActionPlan("")
           }}
         />
       )}
