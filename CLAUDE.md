@@ -14,6 +14,10 @@ App goes directly to `/dashboard` without login.
 ### Hydration (SSR vs client)
 - For dates/times in Client Components that SSR, use `lib/format-th-datetime.ts` — `formatThDateTime(iso)` and `formatThDateFromYMD("YYYY-MM-DD")` with fixed `th-TH` + `Asia/Bangkok`. Avoid bare `toLocaleString()` / ambiguous `new Date("YYYY-MM-DDTHH:mm:ss")` (no `Z`) so server HTML matches the browser.
 
+### AS Stock (mock)
+- Empty localStorage: demo seed **only** if `NODE_ENV === "development"` or `NEXT_PUBLIC_STOCK_DEV_SEED=true` — production build starts with empty stock until data is persisted.
+- Service jobs: `writeJobs` bumps `as_service_jobs_version`; Stock page uses `writeJobsWithConcurrencyCheck` for accept return / outbound trace actions. Loan approval audit: `loan_approved_at`, `loan_approved_by` + `lib/mock/session.ts` (`as_mock_session`).
+
 ## Design Principles
 - Apple-style UI: clean, white, rounded-3xl cards, generous whitespace
 - Accent: blue-500 primary, violet for One-QA, emerald for Existing, amber for New

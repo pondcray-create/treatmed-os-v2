@@ -1,3 +1,5 @@
+import { newId } from "@/lib/new-id"
+
 export interface ASContact {
   id: string
   name: string
@@ -251,7 +253,8 @@ export interface ASWorkflowSettings {
   service_statuses: ASJobStatus[]
 }
 
-const KEYS = {
+/** localStorage keys — exported for cross-tab sync / init without write side-effects */
+export const AS_STORE_KEYS = {
   jobs: "as_service_jobs",
   orgs: "as_organizations",
   stockDispatches: "as_stock_dispatches",
@@ -262,13 +265,23 @@ const KEYS = {
   proactiveCalibrationAssets: "as_proactive_calibration_assets",
   dropdownConfig: "as_dropdown_config",
   stockItems: "as_stock_items",
+  /** Stock page ledger rows (matches UI `StockTransaction`) */
+  stockTransactions: "as_stock_transactions",
+  /** Stock page booking rows (matches UI `Booking`) */
+  stockBookings: "as_stock_bookings",
+  /** Optimistic concurrency for stock snapshot (integer string) */
+  stockItemsVersion: "as_stock_items_version",
   globalSettings: "global_settings",
   seSettings: "se_settings",
   productCatalog: "product_catalog",
   moduleAssignments: "as_module_assignments",
   asWorkflowSettings: "as_workflow_settings",
   seIncomingRequests: "as_se_incoming_requests",
+  /** Optimistic concurrency counter for `as_service_jobs` (multi-tab mock) */
+  jobsVersion: "as_service_jobs_version",
 } as const
+
+const KEYS = AS_STORE_KEYS
 
 export const DEFAULT_AS_DROPDOWN_CONFIG: ASDropdownConfig = {
   stock_models: [
@@ -358,6 +371,47 @@ function hasWindow() {
   return typeof window !== "undefined"
 }
 
+/** Read JSON from localStorage without initializing missing keys (for cross-tab sync). */
+export function tryReadJSON<T>(key: string): T | null {
+  if (!hasWindow()) return null
+  const raw = window.localStorage.getItem(key)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Compare-and-swap write: only writes if stored version equals `expectedVersion`.
+ * Bump `stockItemsVersion` on success. Use to reduce lost updates across tabs (mock phase).
+ */
+export function writeStockItemsWithVersion<T extends { id: string }>(
+  items: T[],
+  expectedVersion: number | null,
+): { ok: boolean; nextVersion: number } {
+  if (!hasWindow()) return { ok: false, nextVersion: expectedVersion ?? 0 }
+  const verRaw = window.localStorage.getItem(KEYS.stockItemsVersion)
+  const currentVer = verRaw ? parseInt(verRaw, 10) : 0
+  const safeVer = Number.isFinite(currentVer) ? currentVer : 0
+  if (expectedVersion !== null && safeVer !== expectedVersion) {
+    return { ok: false, nextVersion: safeVer }
+  }
+  const nextVer = safeVer + 1
+  window.localStorage.setItem(KEYS.stockItems, JSON.stringify(items))
+  window.localStorage.setItem(KEYS.stockItemsVersion, String(nextVer))
+  window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: KEYS.stockItems } }))
+  return { ok: true, nextVersion: nextVer }
+}
+
+export function readStockItemsVersion(): number {
+  if (!hasWindow()) return 0
+  const verRaw = window.localStorage.getItem(KEYS.stockItemsVersion)
+  const n = verRaw ? parseInt(verRaw, 10) : 0
+  return Number.isFinite(n) ? n : 0
+}
+
 export function readStore<T>(key: string, fallback: T): T {
   if (!hasWindow()) return fallback
   const raw = window.localStorage.getItem(key)
@@ -385,8 +439,35 @@ export function readJobs(fallback: ASServiceJob[]) {
   return readStore<ASServiceJob[]>(KEYS.jobs, fallback)
 }
 
+export function readJobsVersion(): number {
+  if (!hasWindow()) return 0
+  const n = parseInt(window.localStorage.getItem(KEYS.jobsVersion) || "0", 10)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** Every jobs write bumps version (for cross-tab detection). */
 export function writeJobs(value: ASServiceJob[]) {
+  if (!hasWindow()) return
+  const v = readJobsVersion()
   writeStore(KEYS.jobs, value)
+  window.localStorage.setItem(KEYS.jobsVersion, String(v + 1))
+}
+
+/**
+ * Write jobs only if `as_service_jobs_version` still equals `expectedVersion`.
+ * Call sites: Stock page mutations that must not silently overwrite another tab.
+ */
+export function writeJobsWithConcurrencyCheck(
+  jobs: ASServiceJob[],
+  expectedVersion: number,
+): { ok: boolean; nextVersion: number } {
+  if (!hasWindow()) return { ok: false, nextVersion: expectedVersion }
+  const cur = readJobsVersion()
+  if (cur !== expectedVersion) return { ok: false, nextVersion: cur }
+  writeStore(KEYS.jobs, jobs)
+  const next = cur + 1
+  window.localStorage.setItem(KEYS.jobsVersion, String(next))
+  return { ok: true, nextVersion: next }
 }
 
 export function readOrganizations(fallback: ASOrganization[]) {
@@ -407,7 +488,11 @@ export function writeStockDispatches(value: ASStockDispatch[]) {
 
 export function appendStockDispatch(dispatch: ASStockDispatch) {
   const current = readStockDispatches([])
-  writeStockDispatches([dispatch, ...current])
+  let next = dispatch
+  if (current.some((d) => d.id === next.id)) {
+    next = { ...dispatch, id: newId("sd") }
+  }
+  writeStockDispatches([next, ...current])
 }
 
 export function readStockDispatchHistory(fallback: ASStockDispatchHistoryEntry[]) {
@@ -511,6 +596,23 @@ export function writeStockItems(value: ASStockSnapshotItem[]) {
   writeStore(KEYS.stockItems, value)
 }
 
+/** Persist Stock page transaction ledger (full JSON shape from UI). */
+export function readStockTransactionsLedger<T = unknown[]>(fallback: T): T {
+  return readStore<T>(KEYS.stockTransactions, fallback)
+}
+
+export function writeStockTransactionsLedger<T>(value: T) {
+  writeStore(KEYS.stockTransactions, value)
+}
+
+export function readStockBookingsLedger<T = unknown[]>(fallback: T): T {
+  return readStore<T>(KEYS.stockBookings, fallback)
+}
+
+export function writeStockBookingsLedger<T>(value: T) {
+  writeStore(KEYS.stockBookings, value)
+}
+
 export function readGlobalSettings(fallback: GlobalSettings = DEFAULT_GLOBAL_SETTINGS) {
   return readStore<GlobalSettings>(KEYS.globalSettings, fallback)
 }
@@ -566,7 +668,7 @@ export function upsertOrganizationByName(
   if (existing) return orgs
 
   const next: ASOrganization = {
-    id: Date.now().toString(),
+    id: newId("org"),
     name: orgName,
     org_type: "New",
     org_format: "",
@@ -577,7 +679,7 @@ export function upsertOrganizationByName(
     contacts: contactName
       ? [
           {
-            id: `${Date.now()}-c1`,
+            id: newId("ct"),
             name: contactName,
             position: "",
             email: "",

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, type FormEvent } from "react"
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import { Package, Plus, Search, X, AlertTriangle, CheckCircle2, Wrench, FlaskConical, ShoppingCart, Zap, Drill, Camera, ChevronRight, Bookmark, Send, User, Building2, ClipboardList, MoreHorizontal, ArrowDownCircle } from "lucide-react"
 import {
   appendModuleAssignment,
@@ -17,11 +17,16 @@ import {
   readStockDispatches,
   readStockDispatchHistory,
   readStockOutboundTraceLog,
-  readStockItems,
   appendStockOutboundTraceLog,
   writeProactiveCalibrationAssets,
-  writeJobs,
-  writeStockItems,
+  writeJobsWithConcurrencyCheck,
+  readJobsVersion,
+  tryReadJSON,
+  AS_STORE_KEYS,
+  writeStockItemsWithVersion,
+  readStockItemsVersion,
+  writeStockTransactionsLedger,
+  writeStockBookingsLedger,
   type ASContact,
   type ASModuleAssignment,
   type ASLoanReturnHistory,
@@ -33,6 +38,8 @@ import {
   type ASStockOutboundTraceLogEntry,
 } from "@/lib/mock/as-store"
 import { formatThDateFromYMD, formatThDateTime } from "@/lib/format-th-datetime"
+import { newId } from "@/lib/new-id"
+import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
 
 type StockCategory = "spare_part" | "module" | "sellable" | "consumable" | "tool" | "demo"
 type ItemStatus = "in_stock" | "reserved" | "on_loan" | "sold" | "pending_qc"
@@ -62,6 +69,9 @@ interface StockItem {
   /** ไม่ใช่ Demo: ต้องอนุมัติก่อนเปิดฟอร์ม Loan — Demo ไม่ใช้ฟิลด์นี้ */
   loan_approval_status?: "pending" | "approved"
   loan_approval_note?: string
+  /** audit — mock session userId เมื่ออนุมัติยืม */
+  loan_approved_at?: string
+  loan_approved_by?: string
 }
 
 interface StockTransaction {
@@ -110,6 +120,71 @@ function canOpenStockLoanForm(item: StockItem) {
   if (item.status !== "in_stock" && item.status !== "reserved") return false
   if (isLoanDemoCategory(item)) return true
   return item.loan_approval_status === "approved"
+}
+
+/** อนุญาตให้ตัดขาย (ไม่รวม on_loan / pending_qc / sold) */
+const STATUSES_ALLOWED_SELL: ItemStatus[] = ["in_stock", "reserved"]
+
+function tryApplyStockTx(
+  p: StockItem[],
+  tx: StockTransaction,
+): { ok: boolean; next: StockItem[]; error?: string } {
+  const delta =
+    tx.type === "in" ? Math.abs(tx.qty) : tx.type === "out" ? -Math.abs(tx.qty) : tx.qty
+
+  const exists = p.find((i) => i.id === tx.item_id)
+  if (exists) {
+    const nextQty = exists.qty + delta
+    if (nextQty < 0) {
+      return { ok: false, next: p, error: "รับเข้า/จ่ายออกไม่สำเร็จ: จำนวนในคลังไม่พอ" }
+    }
+    return {
+      ok: true,
+      next: p.map((i) => {
+        if (i.id !== tx.item_id) return i
+        return {
+          ...i,
+          qty: nextQty,
+          status: tx.set_status || i.status,
+          serial_number: tx.serial_number || i.serial_number,
+          brand: tx.manufacturer || i.brand,
+          model: tx.model || i.model,
+          qc_customer_org: tx.customer_org || i.qc_customer_org,
+          qc_customer_contact: tx.customer_contact || i.qc_customer_contact,
+          loaned_to: tx.set_status === "in_stock" ? undefined : i.loaned_to,
+          loan_due: tx.set_status === "in_stock" ? undefined : i.loan_due,
+          loan_date: tx.set_status === "in_stock" ? undefined : i.loan_date,
+          stocked_at: i.stocked_at || tx.date,
+          last_calibration_date: tx.equipment_calibration_date?.trim() || i.last_calibration_date,
+        }
+      }),
+    }
+  }
+
+  if (tx.type !== "in") {
+    return { ok: false, next: p, error: "จ่ายออกไม่ได้: ไม่พบรายการในคลัง" }
+  }
+
+  const nextItem: StockItem = {
+    id: tx.item_id,
+    name: tx.model || tx.item_name,
+    brand: tx.manufacturer || "—",
+    model: tx.model || tx.item_name,
+    category: tx.category || "sellable",
+    has_serial: !!tx.serial_number || !!(tx.module_serials && tx.module_serials.length) || !!tx.companion_serial,
+    serial_number: tx.serial_number,
+    module_serials: tx.module_serials && tx.module_serials.length > 0 ? tx.module_serials : undefined,
+    companion_serial: tx.companion_serial || undefined,
+    qty: Math.max(0, tx.qty),
+    min_qty: 0,
+    unit: "เครื่อง",
+    status: tx.set_status || "in_stock",
+    qc_customer_org: tx.customer_org,
+    qc_customer_contact: tx.customer_contact,
+    stocked_at: tx.date,
+    last_calibration_date: tx.equipment_calibration_date?.trim() || undefined,
+  }
+  return { ok: true, next: [nextItem, ...p] }
 }
 
 const CAT_LABELS: Record<StockCategory, string> = {
@@ -212,11 +287,10 @@ function upsertProactiveCalibrationFromInputProduct(tx: StockTransaction) {
   const model = (tx.model || tx.item_name).trim() || "—"
   const ref = tx.reference?.trim() || "—"
   let next = [...assets]
-  let n = 0
   for (const serial of serials) {
     const key = serial.toLowerCase()
     const existing = next.find((a) => a.serial_number.trim().toLowerCase() === key)
-    const id = existing?.id || `pc-in-${Date.now()}-${n++}`
+    const id = existing?.id || newId("pc-in")
     const record: ASProactiveCalibrationAsset = {
       id,
       customer_org: PROACTIVE_ORG_STOCK_INBOUND,
@@ -273,9 +347,19 @@ function ReturnDemoDialog({
 }) {
   const [loanDate, setLoanDate] = useState(item.loan_date || todayISO)
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
+  const [dateErr, setDateErr] = useState<string | null>(null)
   function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!loanDate) return
+    setDateErr(null)
+    if (parseISODateToUTC(loanDate) > parseISODateToUTC(todayISO)) {
+      setDateErr("วันที่ลูกค้ายืมต้องไม่เกินวันนี้ (วันที่รับคืน)")
+      return
+    }
+    if (item.loan_due && parseISODateToUTC(loanDate) > parseISODateToUTC(item.loan_due)) {
+      setDateErr("วันที่ยืมไม่ควรหลังกำหนดคืน — ตรวจสอบอีกครั้ง")
+      return
+    }
     onConfirm(loanDate)
     onClose()
   }
@@ -304,8 +388,16 @@ function ReturnDemoDialog({
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               วันที่ลูกค้ายืม *
             </label>
-            <input type="date" required value={loanDate} onChange={(e) => setLoanDate(e.target.value)} className={inp} />
+            <input
+              type="date"
+              required
+              max={todayISO}
+              value={loanDate}
+              onChange={(e) => setLoanDate(e.target.value)}
+              className={inp}
+            />
           </div>
+          {dateErr && <p className="text-xs text-red-600">{dateErr}</p>}
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
               ยกเลิก
@@ -396,6 +488,7 @@ function LoanDialog({
   const [orgPick, setOrgPick] = useState("")
   const [freeOrg, setFreeOrg] = useState("")
   const [dueDate, setDueDate] = useState(item.loan_due || todayISO)
+  const [dueErr, setDueErr] = useState<string | null>(null)
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm bg-white"
 
   useEffect(() => {
@@ -411,8 +504,13 @@ function LoanDialog({
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
+    setDueErr(null)
     const orgName = orgPick === "__other__" ? freeOrg.trim() : orgPick.trim()
     if (!orgName || !dueDate) return
+    if (parseISODateToUTC(dueDate) < parseISODateToUTC(todayISO)) {
+      setDueErr("กำหนดคืนต้องไม่ก่อนวันนี้")
+      return
+    }
     const nextOrgs = upsertOrganizationByName(readOrganizations([]), orgName, undefined)
     writeOrganizations(nextOrgs)
     onConfirm({ customer: orgName, dueDate })
@@ -471,6 +569,7 @@ function LoanDialog({
             <label className="block text-sm font-medium text-gray-700 mb-1.5">กำหนดคืน *</label>
             <input type="date" required value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inp} />
           </div>
+          {dueErr && <p className="text-xs text-red-600">{dueErr}</p>}
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
               ยกเลิก
@@ -614,7 +713,53 @@ const MOCK_BOOKINGS: Booking[] = [
   { id:"b1", item_id:"4", item_name:"ProSim 8 + SPOT Module", serial_number:"PS8-2024-NEW-001", sales_name:"คุณสมหมาย", customer_name:"โรงพยาบาลรามาธิบดี", booked_date:"2024-03-10", note:"รอลูกค้า approve PO" },
 ]
 
+/** ค่าเริ่มต้น MOCK เมื่อ localStorage ว่าง — ใช้เฉพาะ dev หรือเมื่อตั้ง NEXT_PUBLIC_STOCK_DEV_SEED=true */
+const USE_STOCK_DEV_SEED =
+  process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_STOCK_DEV_SEED === "true"
+
 const SALES_STAFF = ["คุณสมหมาย", "คุณวิภาพร", "คุณธนากร", "คุณพรรณิภา"]
+
+function findOrgByNameLoose(orgs: ASOrganization[], name: string): ASOrganization | undefined {
+  const q = name.trim().toLowerCase()
+  if (!q) return undefined
+  return orgs.find((o) => o.name.trim().toLowerCase() === q)
+}
+
+/**
+ * ลูกค้าที่ผูกกับรายการสต็อกแล้ว — ใช้เติมอัตโนมัติตอน Send to Services
+ * ลำดับ: Booking → Loan → QC (รับเข้า / Commissioning) → ตัดขาย (Sold)
+ */
+function getStockItemLinkedCustomer(item: StockItem): {
+  org: string
+  contact: string
+  sourceLabel: string
+} | null {
+  const booking = item.reserved_for_customer?.trim()
+  if (booking) {
+    return { org: booking, contact: "", sourceLabel: "Booking" }
+  }
+  const loan = item.loaned_to?.trim()
+  if (loan) {
+    return { org: loan, contact: "", sourceLabel: "Loan" }
+  }
+  const qcOrg = item.qc_customer_org?.trim()
+  if (qcOrg) {
+    return {
+      org: qcOrg,
+      contact: item.qc_customer_contact?.trim() ?? "",
+      sourceLabel: "QC / รับเข้า",
+    }
+  }
+  const soldOrg = item.sold_to_org?.trim()
+  if (soldOrg) {
+    return {
+      org: soldOrg,
+      contact: item.sold_contact?.trim() ?? "",
+      sourceLabel: "ตัดขาย (Sold)",
+    }
+  }
+  return null
+}
 
 function Pill({ label, color }: { label: string; color: string }) {
   return <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${color}`}>{label}</span>
@@ -627,10 +772,55 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
   const [customerNotInDb, setCustomerNotInDb] = useState(false)
   const [freeOrgName, setFreeOrgName] = useState("")
   const [freeContactName, setFreeContactName] = useState("")
+  const [linkedHint, setLinkedHint] = useState<string | null>(null)
 
   useEffect(() => {
     setOrgs(readOrganizations([]))
   }, [])
+
+  /** เมื่อรายการสต็อกผูกลูกค้าแล้ว → เติมหน่วยงาน/ผู้ติดต่อก่อนส่งงานอัตโนมัติ */
+  useEffect(() => {
+    const linked = getStockItemLinkedCustomer(item)
+    if (!linked) {
+      setLinkedHint(null)
+      setCustomerNotInDb(false)
+      setFreeOrgName("")
+      setFreeContactName("")
+      setForm({ item, job_type: "repair", customer_org: "", customer_name: "", symptom: "" })
+      return
+    }
+
+    const loaded = readOrganizations([])
+    const orgMatch = findOrgByNameLoose(loaded, linked.org)
+
+    if (orgMatch) {
+      const primary =
+        orgMatch.contacts.find((c) => c.is_primary)?.name ??
+        orgMatch.contacts[0]?.name ??
+        ""
+      setCustomerNotInDb(false)
+      setFreeOrgName("")
+      setFreeContactName("")
+      setForm({
+        item,
+        job_type: "repair",
+        customer_org: orgMatch.name,
+        customer_name: linked.contact || primary || "",
+        symptom: "",
+      })
+      setLinkedHint(`เติมชื่อลูกค้าอัตโนมัติจาก ${linked.sourceLabel} — ตรวจสอบก่อนส่ง`)
+    } else {
+      setCustomerNotInDb(true)
+      setFreeOrgName(linked.org)
+      setFreeContactName(linked.contact)
+      setForm({ item, job_type: "repair", customer_org: "", customer_name: "", symptom: "" })
+      setLinkedHint(
+        linked.contact
+          ? `เติมจาก ${linked.sourceLabel} — หน่วยงานยังไม่อยู่ในรายชื่อ (โหมดกรอกใหม่)`
+          : `เติมชื่อหน่วยงานจาก ${linked.sourceLabel} — กรุณากรอกผู้ติดต่อ`,
+      )
+    }
+  }, [item])
 
   const selectedOrg = orgs.find((o) => o.name === form.customer_org)
   const contacts: ASContact[] = selectedOrg?.contacts ?? []
@@ -667,9 +857,15 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
         <div className="p-3 bg-blue-50 rounded-2xl mb-4 border border-blue-100">
           <p className="font-semibold text-gray-900 text-sm">{item.name}</p>
           {item.serial_number && <p className="text-xs font-mono text-blue-600 mt-0.5">SN: {item.serial_number}</p>}
-          <p className="text-[11px] text-blue-700 mt-2 leading-snug">
-            รองรับลูกค้าที่ยังไม่อยู่ในฐานข้อมูล — ระบบจะลงทะเบียนหน่วยงานอัตโนมัติเมื่อยืนยัน
-          </p>
+          {linkedHint ? (
+            <p className="text-[11px] text-emerald-900 mt-2 leading-snug rounded-xl bg-emerald-50/90 border border-emerald-200/80 px-2.5 py-2 font-medium">
+              {linkedHint}
+            </p>
+          ) : (
+            <p className="text-[11px] text-blue-700 mt-2 leading-snug">
+              รองรับลูกค้าที่ยังไม่อยู่ในฐานข้อมูล — ระบบจะลงทะเบียนหน่วยงานอัตโนมัติเมื่อยืนยัน
+            </p>
+          )}
         </div>
         <form onSubmit={submit} className="space-y-4">
           <div>
@@ -791,11 +987,13 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
 // ── Add Booking Dialog ────────────────────────────────────────────────────────
 function AddBookingDialog({
   items,
+  existingBookings,
   prefillItemId,
   onClose,
   onSave,
 }: {
   items: StockItem[]
+  existingBookings: Booking[]
   prefillItemId?: string | null
   onClose: () => void
   onSave: (b: Booking) => void
@@ -817,12 +1015,16 @@ function AddBookingDialog({
   function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!selectedItem) return
+    if (existingBookings.some((b) => b.item_id === form.item_id)) {
+      window.alert("รายการนี้มี Booking อยู่แล้ว — ปลดการจองเดิมก่อน หรือใช้แถวเดิม")
+      return
+    }
     const customerName = form.customer_pick === "__other__" ? form.customer_other.trim() : form.customer_pick.trim()
     if (!customerName) return
     const nextOrgs = upsertOrganizationByName(readOrganizations([]), customerName, undefined)
     writeOrganizations(nextOrgs)
     onSave({
-      id: Date.now().toString(),
+      id: newId("bk"),
       item_id: form.item_id,
       item_name: selectedItem.name,
       serial_number: selectedItem.serial_number,
@@ -1104,14 +1306,20 @@ function ReceiveProductDialog({
       if (!serialsUniqueInsensitive([mainTrim, comp])) return
     }
 
-    const id = `stk-${Date.now()}`
+    const calTrim = equipmentCalDate.trim()
+    if (calTrim && parseISODateToUTC(calTrim) > parseISODateToUTC(todayISO)) {
+      window.alert("วันที่ Cal ล่าสุดต้องไม่หลังวันรับเข้า (วันนี้)")
+      return
+    }
+
+    const id = newId("stk")
 
     const tx: StockTransaction = {
-      id: `tx-in-${Date.now()}`,
+      id: newId("tx-in"),
       item_id: id,
       item_name: selectedCatalogModel,
       type: "in",
-      qty: qtyIn,
+      qty: Math.max(1, Math.floor(Number(qtyIn)) || 1),
       reference: supplierPo.trim(),
       note: sendCommissioning ? [note.trim(), "ส่ง Commissioning Test หลังรับเข้า"].filter(Boolean).join(" · ") : note.trim() || undefined,
       date: todayISO,
@@ -1418,12 +1626,24 @@ function SellStockDialog({
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function StockPage() {
+  const itemsVersionRef = useRef(0)
+  const jobsVersionRef = useRef(0)
+
   const [items, setItems] = useState<StockItem[]>(() => {
-    const saved = readStockItems([])
-    return saved.length > 0 ? (saved as StockItem[]) : MOCK_ITEMS
+    const saved = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+    if (saved && saved.length > 0) return saved
+    return USE_STOCK_DEV_SEED ? MOCK_ITEMS : []
   })
-  const [transactions, setTransactions] = useState<StockTransaction[]>(MOCK_TRANSACTIONS)
-  const [bookings, setBookings] = useState<Booking[]>(MOCK_BOOKINGS)
+  const [transactions, setTransactions] = useState<StockTransaction[]>(() => {
+    const saved = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
+    if (saved && saved.length > 0) return saved
+    return USE_STOCK_DEV_SEED ? MOCK_TRANSACTIONS : []
+  })
+  const [bookings, setBookings] = useState<Booking[]>(() => {
+    const saved = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
+    if (saved !== null && Array.isArray(saved)) return saved
+    return USE_STOCK_DEV_SEED ? MOCK_BOOKINGS : []
+  })
   const [tab, setTab] = useState<Tab>("all")
   const [search, setSearch] = useState("")
   const [filterCat, setFilterCat] = useState<StockCategory|"all">("all")
@@ -1534,7 +1754,12 @@ export default function StockPage() {
   }
 
   useEffect(() => {
-    const sync = () => {
+    itemsVersionRef.current = readStockItemsVersion()
+    jobsVersionRef.current = readJobsVersion()
+  }, [])
+
+  useEffect(() => {
+    const syncJobsAndDispatches = () => {
       const jobs = readJobs([])
       const dispatches = readStockDispatches([])
       setServiceRequestsFromStock(
@@ -1559,21 +1784,71 @@ export default function StockPage() {
       setPendingInServiceInbox(dispatches.length)
       setLoanReturnHistory(readLoanReturnHistory([]))
       setModuleAssignments(readModuleAssignments([]))
+      jobsVersionRef.current = readJobsVersion()
     }
-    sync()
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
-    const timer = window.setInterval(sync, 1200)
+
+    const hydrateStockFromOtherTab = (ev: StorageEvent) => {
+      if (
+        ev.key !== AS_STORE_KEYS.stockItems &&
+        ev.key !== AS_STORE_KEYS.stockTransactions &&
+        ev.key !== AS_STORE_KEYS.stockBookings
+      ) {
+        return
+      }
+      const li = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+      if (li !== null && Array.isArray(li)) {
+        setItems(li as StockItem[])
+        itemsVersionRef.current = readStockItemsVersion()
+      }
+      const lt = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
+      if (lt !== null && Array.isArray(lt)) setTransactions(lt)
+      const lb = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
+      if (lb !== null && Array.isArray(lb)) setBookings(lb)
+    }
+
+    const onStorage = (ev: StorageEvent) => {
+      syncJobsAndDispatches()
+      hydrateStockFromOtherTab(ev)
+      if (ev.key === AS_STORE_KEYS.jobs) {
+        jobsVersionRef.current = readJobsVersion()
+      }
+    }
+
+    const onAsStoreUpdated = () => {
+      syncJobsAndDispatches()
+    }
+
+    syncJobsAndDispatches()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onAsStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
-      window.clearInterval(timer)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onAsStoreUpdated)
     }
   }, [])
 
   useEffect(() => {
-    writeStockItems(items)
+    const { ok, nextVersion } = writeStockItemsWithVersion(items, itemsVersionRef.current)
+    if (!ok) {
+      const remote = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+      if (remote !== null && Array.isArray(remote)) {
+        setItems(remote as StockItem[])
+        itemsVersionRef.current = readStockItemsVersion()
+        setDispatchSuccess("โหลดข้อมูลคลังจากแท็บอื่นแล้ว (เวอร์ชันไม่ตรงกัน — แก้ไขล่าสุดถูกเก็บไว้ที่อื่น)")
+        setTimeout(() => setDispatchSuccess(null), 5000)
+      }
+      return
+    }
+    itemsVersionRef.current = nextVersion
   }, [items])
+
+  useEffect(() => {
+    writeStockTransactionsLedger(transactions)
+  }, [transactions])
+
+  useEffect(() => {
+    writeStockBookingsLedger(bookings)
+  }, [bookings])
 
   useEffect(() => {
     if (!actionMenuId) return
@@ -1625,7 +1900,7 @@ export default function StockPage() {
     const due = item.loan_due
     if (!item.loaned_to || !due) return
     const overdueDays = Math.max(0, diffDays(due, returnedAt))
-    const id = `lr-${Date.now()}`
+    const id = newId("lr")
     const record: ASLoanReturnHistory = {
       id,
       customer_org: item.loaned_to,
@@ -1651,6 +1926,8 @@ export default function StockPage() {
               loan_date: undefined,
               loan_approval_status: undefined,
               loan_approval_note: undefined,
+              loan_approved_at: undefined,
+              loan_approved_by: undefined,
             }
           : i,
       ),
@@ -1660,15 +1937,47 @@ export default function StockPage() {
   }
 
   function doStockOut(item: StockItem, qty: number, ref: string, note: string) {
-    const tx: StockTransaction = { id: Date.now().toString(), item_id: item.id, item_name: item.name, type:"out", qty, reference: ref, note, date: today, approved_by:"Stock" }
-    setTransactions(p => [tx, ...p])
-    setItems(p => p.map(i => i.id === item.id ? { ...i, qty: i.qty - qty } : i))
+    const take = Math.max(0, Math.floor(Number(qty)))
+    if (take <= 0) return
+    setItems((p) => {
+      const cur = p.find((i) => i.id === item.id)
+      if (!cur || cur.qty < take) {
+        queueMicrotask(() => {
+          setDispatchSuccess("จ่ายออกไม่สำเร็จ: จำนวนในคลังไม่พอ")
+          setTimeout(() => setDispatchSuccess(null), 4000)
+        })
+        return p
+      }
+      const tx: StockTransaction = {
+        id: newId("tx-out"),
+        item_id: item.id,
+        item_name: item.name,
+        type: "out",
+        qty: take,
+        reference: ref,
+        note,
+        date: today,
+        approved_by: "Stock",
+      }
+      queueMicrotask(() => setTransactions((pt) => [tx, ...pt]))
+      return p.map((i) => (i.id === item.id ? { ...i, qty: i.qty - take } : i))
+    })
   }
 
   function confirmSellStock(
     item: StockItem,
     payload: { customer_org: string; customer_contact: string; customer_po: string },
   ) {
+    if (item.status === "on_loan" || item.status === "pending_qc") {
+      setDispatchSuccess("ตัดขายไม่ได้: เครื่องอยู่กับลูกค้า/Service (On Loan หรือ Pending QC)")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
+    if (!STATUSES_ALLOWED_SELL.includes(item.status)) {
+      setDispatchSuccess("ตัดขายไม่ได้: เฉพาะ In Stock / Booking — ปลดการยืมหรือรอรับเข้าคลังก่อน")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
     if (item.has_serial && !item.serial_number?.trim()) {
       setDispatchSuccess("ตัดขายไม่สำเร็จ: ต้องมี SN ก่อน")
       setTimeout(() => setDispatchSuccess(null), 4000)
@@ -1688,7 +1997,7 @@ export default function StockPage() {
       ].filter(Boolean)
       linkedModules.forEach((moduleSn) => {
         const rec: ASModuleAssignment = {
-          id: `ma-sold-${Date.now()}-${moduleSn}`,
+          id: newId("ma-sold"),
           module_serial: moduleSn,
           from_parent_serial: item.serial_number,
           to_parent_serial: undefined,
@@ -1702,7 +2011,7 @@ export default function StockPage() {
     }
 
     const tx: StockTransaction = {
-      id: `tx-sold-${Date.now()}`,
+      id: newId("tx-sold"),
       item_id: item.id,
       item_name: item.name,
       type: "out",
@@ -1734,6 +2043,8 @@ export default function StockPage() {
               reserved_for_customer: undefined,
               loan_approval_status: undefined,
               loan_approval_note: undefined,
+              loan_approved_at: undefined,
+              loan_approved_by: undefined,
               sold_to_org: org,
               sold_contact: contact || undefined,
               sold_customer_po: po,
@@ -1747,104 +2058,78 @@ export default function StockPage() {
   }
 
   function saveItem(data: Partial<StockItem>) {
-    if (data.id) { setItems(p => p.map(i => i.id === data.id ? { ...i, ...data } as StockItem : i)) }
-    else { setItems(p => [...p, { id: Date.now().toString(), status:"in_stock", ...data } as StockItem]) }
+    const qty = Math.max(0, Math.floor(Number(data.qty ?? 0)))
+    const min_qty = Math.max(0, Math.floor(Number(data.min_qty ?? 0)))
+    let normalized: Partial<StockItem> = { ...data, qty, min_qty }
+    if (normalized.has_serial && normalized.qty !== 1) {
+      normalized = { ...normalized, qty: 1 }
+    }
+    if (normalized.id) {
+      setItems((p) =>
+        p.map((i) => (i.id === normalized.id ? ({ ...i, ...normalized } as StockItem) : i)),
+      )
+    } else {
+      setItems((p) => [...p, { id: newId("item"), status: "in_stock", ...normalized } as StockItem])
+    }
   }
 
   function addTransaction(tx: StockTransaction) {
-    setTransactions(p => [tx, ...p])
     setItems((p) => {
-      const exists = p.find((i) => i.id === tx.item_id)
-      if (exists) {
-        return p.map((i) => {
-          if (i.id !== tx.item_id) return i
-          return {
-            ...i,
-            qty: i.qty + tx.qty,
-            status: tx.set_status || i.status,
-            serial_number: tx.serial_number || i.serial_number,
-            brand: tx.manufacturer || i.brand,
-            model: tx.model || i.model,
-            qc_customer_org: tx.customer_org || i.qc_customer_org,
-            qc_customer_contact: tx.customer_contact || i.qc_customer_contact,
-            // If we receive back to stock, clear loan metadata.
-            loaned_to: tx.set_status === "in_stock" ? undefined : i.loaned_to,
-            loan_due: tx.set_status === "in_stock" ? undefined : i.loan_due,
-            loan_date: tx.set_status === "in_stock" ? undefined : i.loan_date,
-            stocked_at: i.stocked_at || tx.date,
-            last_calibration_date: tx.equipment_calibration_date?.trim() || i.last_calibration_date,
-          }
+      const r = tryApplyStockTx(p, tx)
+      if (!r.ok) {
+        queueMicrotask(() => {
+          setDispatchSuccess(r.error || "ธุรกรรมไม่สำเร็จ")
+          setTimeout(() => setDispatchSuccess(null), 4500)
         })
+        return p
       }
-
-      // สร้างรายการในคลังใหม่สำหรับ "เครื่องใหม่" (ไม่มี item_id ในระบบเดิม)
-      const nextItem: StockItem = {
-        id: tx.item_id,
-        name: tx.model || tx.item_name,
-        brand: tx.manufacturer || "—",
-        model: tx.model || tx.item_name,
-        category: tx.category || "sellable",
-        has_serial: !!tx.serial_number || !!(tx.module_serials && tx.module_serials.length) || !!tx.companion_serial,
-        serial_number: tx.serial_number,
-        module_serials: tx.module_serials && tx.module_serials.length > 0 ? tx.module_serials : undefined,
-        companion_serial: tx.companion_serial || undefined,
-        qty: tx.qty,
-        min_qty: 0,
-        unit: "เครื่อง",
-        status: tx.set_status || "in_stock",
-        qc_customer_org: tx.customer_org,
-        qc_customer_contact: tx.customer_contact,
-        stocked_at: tx.date,
-        last_calibration_date: tx.equipment_calibration_date?.trim() || undefined,
-      }
-      return [nextItem, ...p]
-    })
-
-    // When returning an item with loan context, record customer loan evaluation.
-    if (tx.type === "in" && tx.customer_org && tx.loan_date && tx.loan_due) {
-      const overdueDays = Math.max(0, diffDays(tx.loan_due, tx.date))
-      const record: ASLoanReturnHistory = {
-        id: `lr-${Date.now()}`,
-        customer_org: tx.customer_org,
-        equipment_name: tx.item_name,
-        loan_date: tx.loan_date,
-        due_date: tx.loan_due,
-        returned_at: tx.date,
-        overdue_days: overdueDays,
-        source: "receive_return",
-        created_at: new Date().toISOString(),
-      }
-      appendLoanReturnHistory(record)
-      setLoanReturnHistory((prev) => [record, ...prev])
-    }
-
-    if (tx.set_status === "pending_qc") {
-      appendStockDispatch({
-        id: `sd-qc-${Date.now()}`,
-        item_name: tx.model || tx.item_name,
-        manufacturer: tx.manufacturer,
-        model: tx.model || tx.item_name,
-        serial_number: tx.serial_number || "—",
-        customer_org: tx.customer_org?.trim() || "Stock — รับเข้า / Commissioning",
-        customer_contact: tx.customer_contact?.trim() || "—",
-        symptom: `Commissioning Test — ตรวจเช็คก่อนเข้า Stock (PO ${tx.reference})`,
-        job_type: "commissioning",
-        routing: "overseas",
-        dispatched_by: "Stock",
-        dispatched_at: today,
-        due_date: tx.due_date,
-        stock_item_id: tx.item_id,
+      queueMicrotask(() => {
+        setTransactions((pt) => [tx, ...pt])
+        if (tx.type === "in" && tx.customer_org && tx.loan_date && tx.loan_due) {
+          const overdueDays = Math.max(0, diffDays(tx.loan_due, tx.date))
+          const record: ASLoanReturnHistory = {
+            id: newId("lr"),
+            customer_org: tx.customer_org,
+            equipment_name: tx.item_name,
+            loan_date: tx.loan_date,
+            due_date: tx.loan_due,
+            returned_at: tx.date,
+            overdue_days: overdueDays,
+            source: "receive_return",
+            created_at: new Date().toISOString(),
+          }
+          appendLoanReturnHistory(record)
+          setLoanReturnHistory((prev) => [record, ...prev])
+        }
+        if (tx.set_status === "pending_qc") {
+          appendStockDispatch({
+            id: newId("sd-qc"),
+            item_name: tx.model || tx.item_name,
+            manufacturer: tx.manufacturer,
+            model: tx.model || tx.item_name,
+            serial_number: tx.serial_number || "—",
+            customer_org: tx.customer_org?.trim() || "Stock — รับเข้า / Commissioning",
+            customer_contact: tx.customer_contact?.trim() || "—",
+            symptom: `Commissioning Test — ตรวจเช็คก่อนเข้า Stock (PO ${tx.reference})`,
+            job_type: "commissioning",
+            routing: "overseas",
+            dispatched_by: "Stock",
+            dispatched_at: today,
+            due_date: tx.due_date,
+            stock_item_id: tx.item_id,
+          })
+          setDispatchSuccess(`ส่ง Commissioning / Pending QC เรียบร้อยแล้ว (${tx.reference})`)
+          setTimeout(() => setDispatchSuccess(null), 4000)
+        }
+        upsertProactiveCalibrationFromInputProduct(tx)
       })
-      setDispatchSuccess(`ส่ง Commissioning / Pending QC เรียบร้อยแล้ว (${tx.reference})`)
-      setTimeout(() => setDispatchSuccess(null), 4000)
-    }
-
-    upsertProactiveCalibrationFromInputProduct(tx)
+      return r.next
+    })
   }
 
   function handleDispatch(form: DispatchForm) {
     appendStockDispatch({
-      id: `sd-${Date.now()}`,
+      id: newId("sd"),
       item_name: form.item.name,
       manufacturer: form.item.brand,
       model: form.item.model || form.item.name,
@@ -1870,6 +2155,7 @@ export default function StockPage() {
   /** Service ปิดงานแล้ว — Stock ยืนยันรับเข้าคลังเพื่อสถานะพร้อมจำหน่าย */
   function acceptStockReturn(job: ASServiceJob) {
     const receivedAt = new Date().toISOString()
+    const expectedVer = jobsVersionRef.current
     const allJobs = readJobs([])
     const nextJobs = allJobs.map((j) =>
       j.id === job.id
@@ -1889,7 +2175,15 @@ export default function StockPage() {
           }
         : j,
     )
-    writeJobs(nextJobs)
+    const { ok, nextVersion } = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
+    if (!ok) {
+      jobsVersionRef.current = readJobsVersion()
+      window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: AS_STORE_KEYS.jobs } }))
+      setDispatchSuccess("บันทึกไม่สำเร็จ: ข้อมูลงานถูกแก้ในแท็บอื่น — รีเฟรชแล้วลองอีกครั้ง")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
+    jobsVersionRef.current = nextVersion
     setItems((prev) =>
       prev.map((i) => {
         const byId = job.stock_item_id && i.id === job.stock_item_id
@@ -1944,6 +2238,7 @@ export default function StockPage() {
     const job = traceActionDialog.job
     if (!traceCancelReason.trim() || !traceCancelActionPlan.trim()) return
     const now = new Date().toISOString()
+    const expectedVer = jobsVersionRef.current
     const all = readJobs([])
     const next = all.map((j) =>
       j.id !== job.id
@@ -1966,9 +2261,17 @@ export default function StockPage() {
             ],
           },
     )
-    writeJobs(next as ASServiceJob[])
+    const w1 = writeJobsWithConcurrencyCheck(next as ASServiceJob[], expectedVer)
+    if (!w1.ok) {
+      jobsVersionRef.current = readJobsVersion()
+      window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: AS_STORE_KEYS.jobs } }))
+      setDispatchSuccess("บันทึกไม่สำเร็จ: ข้อมูลงานถูกแก้ในแท็บอื่น — รีเฟรชแล้วลองอีกครั้ง")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
+    jobsVersionRef.current = w1.nextVersion
     appendStockOutboundTraceLog({
-      id: `sot-${Date.now()}`,
+      id: newId("sot"),
       close_kind: "OUTBOUND_TRACE_CANCELLED",
       recorded_at: now,
       service_job_id: job.id,
@@ -1996,6 +2299,7 @@ export default function StockPage() {
       return
     }
     const now = new Date().toISOString()
+    const expectedVer = jobsVersionRef.current
     const all = readJobs([])
     const next = all.map((j) =>
       j.id !== job.id
@@ -2015,9 +2319,17 @@ export default function StockPage() {
             ],
           },
     )
-    writeJobs(next)
+    const w2 = writeJobsWithConcurrencyCheck(next, expectedVer)
+    if (!w2.ok) {
+      jobsVersionRef.current = readJobsVersion()
+      window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: AS_STORE_KEYS.jobs } }))
+      setDispatchSuccess("บันทึกไม่สำเร็จ: ข้อมูลงานถูกแก้ในแท็บอื่น — รีเฟรชแล้วลองอีกครั้ง")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
+    jobsVersionRef.current = w2.nextVersion
     appendStockOutboundTraceLog({
-      id: `sot-${Date.now()}`,
+      id: newId("sot"),
       close_kind: "OUTBOUND_TRACE_COMPLETED",
       recorded_at: now,
       service_job_id: job.id,
@@ -2036,6 +2348,7 @@ export default function StockPage() {
 
   /** ปลดจองจากสต็อกจริง + ลบแถว booking metadata (ถ้ามี) — แหล่งความจริงคือ `items.status === reserved` */
   function releaseBookingByItemId(itemId: string) {
+    if (!window.confirm("ปลดการจองรายการนี้? สถานะจะกลับเป็น In Stock")) return
     setItems((p) =>
       p.map((i) =>
         i.id === itemId
@@ -2068,6 +2381,8 @@ export default function StockPage() {
               loan_date: today,
               loan_approval_status: undefined,
               loan_approval_note: undefined,
+              loan_approved_at: undefined,
+              loan_approved_by: undefined,
             }
           : i,
       ),
@@ -2080,7 +2395,13 @@ export default function StockPage() {
     setItems((p) =>
       p.map((i) =>
         i.id === item.id
-          ? { ...i, loan_approval_status: "pending" as const, loan_approval_note: note.trim() || undefined }
+          ? {
+              ...i,
+              loan_approval_status: "pending" as const,
+              loan_approval_note: note.trim() || undefined,
+              loan_approved_at: undefined,
+              loan_approved_by: undefined,
+            }
           : i,
       ),
     )
@@ -2090,15 +2411,43 @@ export default function StockPage() {
 
   function approveStockLoanRequest(item: StockItem) {
     if (item.loan_approval_status !== "pending") return
-    setItems((p) => p.map((i) => (i.id === item.id ? { ...i, loan_approval_status: "approved" as const } : i)))
-    setDispatchSuccess("อนุมัติการยืมแล้ว — กด Loan เพื่อบันทึกการยืมออก")
+    const session = readMockSession()
+    if (!canApproveStockLoan(session)) {
+      setDispatchSuccess("ไม่มีสิทธิ์อนุมัติยืม — ต้องเป็น Admin / Approver (ตั้งค่าใน localStorage key as_mock_session)")
+      setTimeout(() => setDispatchSuccess(null), 5000)
+      return
+    }
+    const approvedAt = new Date().toISOString()
+    const approvedBy = session.displayName?.trim() || session.userId
+    setItems((p) =>
+      p.map((i) =>
+        i.id === item.id
+          ? {
+              ...i,
+              loan_approval_status: "approved" as const,
+              loan_approved_at: approvedAt,
+              loan_approved_by: approvedBy,
+            }
+          : i,
+      ),
+    )
+    setDispatchSuccess(`อนุมัติการยืมแล้วโดย ${approvedBy} — กด Loan เพื่อบันทึกการยืมออก`)
     setTimeout(() => setDispatchSuccess(null), 4000)
   }
 
   function rejectStockLoanRequest(item: StockItem) {
+    if (item.loan_approval_status !== "pending") return
     setItems((p) =>
       p.map((i) =>
-        i.id === item.id ? { ...i, loan_approval_status: undefined, loan_approval_note: undefined } : i,
+        i.id === item.id
+          ? {
+              ...i,
+              loan_approval_status: undefined,
+              loan_approval_note: undefined,
+              loan_approved_at: undefined,
+              loan_approved_by: undefined,
+            }
+          : i,
       ),
     )
     setDispatchSuccess("ปฏิเสธคำขออนุมัติยืมแล้ว")
@@ -2128,6 +2477,7 @@ export default function StockPage() {
       return
     }
     if (action === "approve_loan_request") {
+      if (!window.confirm(`อนุมัติให้ยืม ${item.serial_number || item.name}?`)) return
       approveStockLoanRequest(item)
       return
     }
@@ -2141,6 +2491,11 @@ export default function StockPage() {
     }
     if (action === "sell_stock") {
       if (item.status === "sold") return
+      if (!STATUSES_ALLOWED_SELL.includes(item.status)) {
+        setDispatchSuccess("ตัดขายได้เฉพาะ In Stock / Booking — ไม่รวม On Loan / Pending QC")
+        setTimeout(() => setDispatchSuccess(null), 4500)
+        return
+      }
       setSellStockItem(item)
       return
     }
@@ -2185,7 +2540,7 @@ export default function StockPage() {
       const nextParent = window.prompt("New parent/display SN", "")
       if (!nextParent || !nextParent.trim()) return
       const rec: ASModuleAssignment = {
-        id: `ma-${Date.now()}`,
+        id: newId("ma"),
         module_serial: moduleSn.trim(),
         from_parent_serial: current?.to_parent_serial,
         to_parent_serial: nextParent.trim(),
@@ -2205,7 +2560,7 @@ export default function StockPage() {
       if (!moduleSn || !moduleSn.trim()) return
       const current = moduleAssignments.find((m) => m.module_serial === moduleSn.trim())
       const rec: ASModuleAssignment = {
-        id: `ma-sep-${Date.now()}`,
+        id: newId("ma-sep"),
         module_serial: moduleSn.trim(),
         from_parent_serial: current?.to_parent_serial || item.serial_number,
         to_parent_serial: undefined,
@@ -2292,24 +2647,49 @@ export default function StockPage() {
   return (
     <div className="h-full flex flex-col relative z-10 p-1">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">คลังสินค้า</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{items.length} รายการ
-            {lowStock.length > 0 && <> · <span className="text-red-500 font-semibold">{lowStock.length} รายการต่ำกว่า Minimum</span></>}
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between mb-6">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-600/80 mb-1">After Service · Stock</p>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-[1.75rem]">คลังสินค้า</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            {items.length} รายการ
+            {lowStock.length > 0 && (
+              <>
+                {" "}
+                · <span className="text-red-600 font-semibold">{lowStock.length} ต่ำกว่า Minimum</span>
+              </>
+            )}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 justify-end">
-          <button
-            type="button"
-            onClick={() => setReceiveProductDialog(true)}
-            className="modern-button premium-glow rounded-2xl text-white bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 shadow-[0_8px_20px_rgba(16,185,129,0.3)]"
-          >
-            <ArrowDownCircle className="h-4 w-4" /> Input Product / รับเข้า
-          </button>
-          <button type="button" onClick={() => setAddDialog({ open: true, data: {} })} className="modern-button-primary premium-glow rounded-2xl">
-            <Plus className="h-4 w-4" /> Item Master
-          </button>
+        <div className="flex shrink-0 justify-start sm:justify-end">
+          <div className="inline-flex flex-col gap-2 rounded-2xl bg-white/90 p-1.5 shadow-[0_4px_24px_rgba(15,23,42,0.06)] ring-1 ring-gray-900/[0.06] backdrop-blur-sm sm:flex-row sm:items-stretch sm:gap-1">
+            <button
+              type="button"
+              onClick={() => setReceiveProductDialog(true)}
+              className="group flex items-center gap-3 rounded-xl bg-gradient-to-br from-emerald-600 via-emerald-600 to-teal-700 px-4 py-2.5 text-left text-white shadow-[0_4px_14px_rgba(5,150,105,0.35)] transition-all duration-200 hover:shadow-[0_6px_20px_rgba(5,150,105,0.42)] hover:brightness-[1.03] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60 focus-visible:ring-offset-2"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/25 shadow-inner">
+                <ArrowDownCircle className="h-5 w-5 text-white" strokeWidth={2} aria-hidden />
+              </span>
+              <span className="flex min-w-0 flex-col leading-tight">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-100/95">รับเข้าคลัง</span>
+                <span className="text-sm font-semibold tracking-tight">Input Product</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddDialog({ open: true, data: {} })}
+              className="group flex items-center gap-3 rounded-xl border border-gray-200/90 bg-white px-4 py-2.5 text-left text-slate-800 shadow-sm transition-all duration-200 hover:border-gray-300 hover:bg-slate-50/90 hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-2"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 ring-1 ring-slate-200/80 transition-colors group-hover:bg-white group-hover:ring-slate-300">
+                <Plus className="h-5 w-5 text-slate-600" strokeWidth={2} aria-hidden />
+              </span>
+              <span className="flex min-w-0 flex-col leading-tight">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Master data</span>
+                <span className="text-sm font-semibold tracking-tight text-slate-900">Item Master</span>
+              </span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2668,7 +3048,7 @@ export default function StockPage() {
                                   Separate Module
                                 </button>
                               )}
-                              {(item.status === "in_stock" || item.status === "reserved" || item.status === "on_loan") && (
+                              {(item.status === "in_stock" || item.status === "reserved") && (
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -3529,7 +3909,14 @@ export default function StockPage() {
       )}
 
       {/* Dialogs */}
-      {dispatchDialog && <DispatchDialog item={dispatchDialog} onClose={()=>setDispatchDialog(null)} onConfirm={handleDispatch} />}
+      {dispatchDialog && (
+        <DispatchDialog
+          key={dispatchDialog.id}
+          item={dispatchDialog}
+          onClose={() => setDispatchDialog(null)}
+          onConfirm={handleDispatch}
+        />
+      )}
       {addDialog.open && (
         <AddItemDialog
           key={addDialog.data?.id ?? "new-item"}
@@ -3555,6 +3942,7 @@ export default function StockPage() {
       {bookingDialog && (
         <AddBookingDialog
           items={items}
+          existingBookings={bookings}
           prefillItemId={bookingPrefillItemId}
           onClose={() => {
             setBookingDialog(false)
