@@ -1,0 +1,7 @@
+flowchart TB
+  P["CustomersPage (as/customers/page.tsx)"]
+  P --> OC["OrgCard"]
+  P --> OD["OrgDialog — onSave"]
+  P --> CR["ContactRow — onSetPrimary / onEdit / onDelete"]
+  P --> CD["ContactDialog — onSave"]
+  P --> RW["read/write organizations (state + mock)"]

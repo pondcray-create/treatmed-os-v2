@@ -1,0 +1,61 @@
+flowchart TB
+  P["StockPage (as/stock/page.tsx)"]
+
+  subgraph Guards["เงื่อนไข / ตรวจสอบ"]
+    G1["isLoanDemoCategory()"]
+    G2["canOpenStockLoanForm()"]
+    G3["serialsUniqueInsensitive()"]
+  end
+
+  subgraph Inbound["รับเข้า / Input Product"]
+    RPD["ReceiveProductDialog"]
+    RPD --> GMS["getReceiveModuleSpec()"]
+    RPD --> CIS["collectStockInboundSerials()"]
+    RPD --> TAT["tryApplyStockTx()"]
+    TAT --> UPC["upsertProactiveCalibrationFromInputProduct()"]
+  end
+
+  subgraph Ledger["บันทึก & CAS"]
+    TAT --> WSV["writeStockItemsWithVersion"]
+    TAT --> WTL["writeStockTransactionsLedger"]
+    TAT --> WBL["writeStockBookingsLedger"]
+    JOB["writeJobsWithConcurrencyCheck — เมื่อส่งงาน"]
+  end
+
+  subgraph BookingSell["Booking / Item / ขาย"]
+    ABD["AddBookingDialog"]
+    AID["AddItemDialog"]
+    SSD["SellStockDialog"]
+  end
+
+  subgraph LoanDemo["Loan / Demo / อนุมัติ"]
+    LRAD["LoanRequestApprovalDialog — canApproveStockLoan / readMockSession"]
+    LD["LoanDialog"]
+    RDD["ReturnDemoDialog"]
+  end
+
+  subgraph ServiceOut["ส่งงานบริการ"]
+    DD["DispatchDialog"]
+    DD --> GLC["getStockItemLinkedCustomer()"]
+    GLC --> FOB["findOrgByNameLoose()"]
+    DD --> USD["upsertOrganizationByName (as-store)"]
+    DD --> ASD["appendStockDispatch"]
+    DD --> JOB
+  end
+
+  subgraph HistoryUI["ประวัติ / ติดตาม"]
+    MHD["ModuleHistoryDialog"]
+    CLHM["CustomerLoanHistoryModal"]
+  end
+
+  subgraph DateHelpers["Date helpers"]
+    H1["parseISODateToUTC / diffDays / addYearsToISODate"]
+  end
+
+  P --> Guards
+  P --> Inbound
+  P --> BookingSell
+  P --> LoanDemo
+  P --> ServiceOut
+  P --> HistoryUI
+  P --> DateHelpers

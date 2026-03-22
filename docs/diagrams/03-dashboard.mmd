@@ -1,0 +1,6 @@
+flowchart TB
+  P["DashboardPage (dashboard/page.tsx)"]
+  P --> E1["useEffect: sync"]
+  E1 --> R["readStockItems([])"]
+  P --> M1["useMemo: stockAging"]
+  P --> UI["Cards + Charts (mock SR / Deals)"]

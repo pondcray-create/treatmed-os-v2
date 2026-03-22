@@ -1,0 +1,12 @@
+flowchart LR
+  subgraph as_store["lib/mock/as-store.ts — ตัวอย่าง export"]
+    R1["readStockItems / writeStockItemsWithVersion"]
+    R2["readJobs / writeJobsWithConcurrencyCheck"]
+    R3["readOrganizations / writeOrganizations / upsertOrganizationByName"]
+    R4["appendStockDispatch / readStockDispatches"]
+    R5["readProactiveCalibrationAssets / writeProactiveCalibrationAssets"]
+    R6["readDropdownConfig / writeDropdownConfig"]
+    R7["readASWorkflowSettings / writeASWorkflowSettings"]
+    R8["readStockTransactionsLedger / writeStockTransactionsLedger"]
+    R9["readStockBookingsLedger / writeStockBookingsLedger"]
+  end

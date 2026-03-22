@@ -1,0 +1,51 @@
+flowchart TB
+  subgraph Entry["เข้าแอป"]
+    A["app/page.tsx → redirect /dashboard"]
+    M["middleware.ts"]
+    L["(auth)/login/page.tsx"]
+  end
+
+  subgraph DashShell["Dashboard Shell"]
+    DL["(dashboard)/layout.tsx"]
+    SB["Sidebar()"]
+    UA["useAuth()"]
+    SO["signOut()"]
+  end
+
+  M --> A
+  M --> L
+  A --> DL
+  L --> DL
+  DL --> SB
+  DL --> UA
+  SB --> SO
+
+  subgraph NavTop["ลิงก์บนสุด Sidebar"]
+    D["/dashboard → DashboardPage"]
+    ST["/settings → SettingsPage"]
+  end
+
+  SB --> NavTop
+
+  subgraph AS["TreatMed AS — NAV_GROUPS[0] roles: admin, as_staff"]
+    C["/as/customers → CustomersPage"]
+    SK["/as/stock → StockPage"]
+    SM["/as/stock-monitor → StockMonitorPage"]
+    SR["/as/service-request → ServiceRequestPage"]
+    SV["/as/service-monitor → ServiceMonitorPage"]
+    CP["/as/calibration-proactive → CalibrationProactivePage"]
+  end
+
+  subgraph SE["TreatMed SE — NAV_GROUPS[1] roles: admin, se_staff"]
+    PL["/se/pipeline → PipelinePage"]
+    DL2["/se/deals → DealsPage"]
+    SRS["/se/service-request → SEServiceRequestPage"]
+    FU["/se/followup → FollowupPage"]
+    FC["/se/forecast → ForecastPage"]
+  end
+
+  SB -->|"visibleGroups.filter(roles)"| AS
+  SB -->|"visibleGroups.filter(roles)"| SE
+
+  R["/as/settings → ASSettingsPage"]
+  R -->|router.replace| ST2["/settings?tab=as"]

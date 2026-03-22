@@ -1,0 +1,7 @@
+flowchart TB
+  P["SettingsPage (settings/page.tsx)"]
+  P --> T["tab: global | as | se (useSearchParams)"]
+  P --> RD["readDropdownConfig / readASWorkflowSettings / readGlobalSettings / readSESettings / readProductCatalog"]
+  P --> WR["writeDropdownConfig / writeASWorkflowSettings / writeGlobalSettings / writeSESettings / writeProductCatalog"]
+  P --> N1["normalizeUnique()"]
+  P --> A1["addItem() — draft → config"]
