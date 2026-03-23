@@ -101,7 +101,7 @@ export default function DealsPage() {
     <div>
       <PageHeader title="Deal & Activity" description="จัดการดีลและ activity" icon={Handshake} />
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Deal List */}
         <div className="col-span-1 space-y-3">
           <div className="relative">
@@ -113,6 +113,14 @@ export default function DealsPage() {
               key={d.id}
               className={`cursor-pointer transition-all hover:shadow-md ${selectedDeal?.id === d.id ? "ring-2 ring-primary" : ""}`}
               onClick={() => setSelectedDeal(d)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  setSelectedDeal(d)
+                }
+              }}
             >
               <CardContent className="p-4 space-y-2">
                 <div className="flex items-start justify-between gap-2">
@@ -147,7 +155,7 @@ export default function DealsPage() {
                     <DealStageBadge stage={selectedDeal.stage} />
                   </div>
                 </CardHeader>
-                <CardContent className="grid grid-cols-3 gap-4">
+                <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div><p className="text-xs text-muted-foreground">มูลค่า</p><p className="font-semibold">{formatCurrency(selectedDeal.value)}</p></div>
                   <div><p className="text-xs text-muted-foreground">โอกาส</p><p className="font-semibold">{selectedDeal.probability}%</p></div>
                   <div><p className="text-xs text-muted-foreground">วันที่คาดปิด</p><p className="font-semibold">{formatDate(selectedDeal.expected_close_date)}</p></div>

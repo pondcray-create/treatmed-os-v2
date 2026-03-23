@@ -57,10 +57,10 @@ export default function DashboardPage() {
     }
     sync()
     window.addEventListener("storage", sync)
-    const timer = window.setInterval(sync, 1200)
+    window.addEventListener("as-store-updated", sync)
     return () => {
       window.removeEventListener("storage", sync)
-      window.clearInterval(timer)
+      window.removeEventListener("as-store-updated", sync)
     }
   }, [])
 
@@ -78,61 +78,57 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <div className="mb-6">
+      <div className="mb-4">
         <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">ภาพรวมการดำเนินงาน TreatMed OS</p>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between mb-3">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">ลูกค้าทั้งหมด</p>
               <div className="p-2 bg-sky-100 rounded-lg"><Users className="h-4 w-4 text-sky-600" /></div>
             </div>
             <p className="text-3xl font-bold text-sky-600">5</p>
-            <p className="text-xs text-muted-foreground mt-1">โรงพยาบาลและคลินิก</p>
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between mb-3">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">งานซ่อมค้างอยู่</p>
               <div className="p-2 bg-amber-100 rounded-lg"><Wrench className="h-4 w-4 text-amber-600" /></div>
             </div>
             <p className="text-3xl font-bold text-amber-600">3</p>
-            <p className="text-xs text-destructive mt-1 flex items-center gap-1">
+            <p className="text-xs text-destructive mt-0.5 flex items-center gap-1">
               <AlertTriangle className="h-3 w-3" /> 2 รายเร่งด่วน
             </p>
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between mb-3">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">Pipeline มูลค่า</p>
               <div className="p-2 bg-violet-100 rounded-lg"><GitBranch className="h-4 w-4 text-violet-600" /></div>
             </div>
             <p className="text-3xl font-bold text-violet-600">57M</p>
-            <p className="text-xs text-muted-foreground mt-1">5 ดีลกำลังดำเนินการ</p>
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between mb-3">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
               <p className="text-sm text-muted-foreground">สต็อกใกล้หมด</p>
               <div className="p-2 bg-red-100 rounded-lg"><Package className="h-4 w-4 text-red-600" /></div>
             </div>
             <p className="text-3xl font-bold text-red-600">2</p>
-            <p className="text-xs text-muted-foreground mt-1">รายการต่ำกว่า minimum</p>
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid grid-cols-3 gap-6 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         {/* Sales Chart */}
         <Card className="col-span-2">
           <CardHeader>
@@ -176,7 +172,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* Recent Service Requests */}
         <Card>
           <CardHeader>

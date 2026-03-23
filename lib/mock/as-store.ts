@@ -22,7 +22,7 @@ export interface ASOrganization {
   created_at: string
 }
 
-export type ASJobType = "repair" | "calibration" | "commissioning"
+export type ASJobType = "repair" | "preventive_maintenance" | "calibration" | "commissioning"
 export type ASJobStatus =
   | "รอประเมิน"
   | "กำลังประเมิน"
@@ -65,6 +65,16 @@ export interface ASServiceJob {
   invoice_no?: string
   warranty_days?: string
   technician?: string
+  assigned_engineer?: string
+  fsm_state?: "DRAFT" | "ISSUED" | "ASSIGNED" | "IN_PROGRESS" | "WAITING_PARTS" | "COMPLETED" | "CLOSED" | "ESCALATED"
+  service_log?: {
+    technician_name?: string
+    service_date?: string
+    findings?: string
+    parts_replaced?: string
+    test_result?: "PASS" | "FAIL"
+    next_service_due_date?: string
+  }
   calibration_date?: string
   due_date?: string
   source?: "manual" | "stock" | "se" | "proactive"
@@ -190,6 +200,70 @@ export interface ASIncomingSERequest {
   priority: ASPriority
 }
 
+export interface ASPartsRequest {
+  id: string
+  job_id: string
+  job_no: string
+  serial_number: string
+  model: string
+  customer_org: string
+  requested_by: string
+  part_name: string
+  qty: number
+  note?: string
+  requested_at: string
+  status: "pending" | "approved" | "rejected" | "fulfilled"
+  approved_at?: string
+  fulfilled_at?: string
+  rejected_at?: string
+}
+
+export interface ASStockNotification {
+  id: string
+  kind: "job_status_changed" | "parts_requested" | "job_escalated" | "job_failed_commissioning"
+  job_id: string
+  job_no: string
+  title: string
+  message: string
+  created_at: string
+  read_at?: string
+}
+
+export interface ASEquipmentHistoryEntry {
+  id: string
+  serial_number: string
+  model: string
+  customer_org: string
+  job_id: string
+  job_no: string
+  event_kind:
+    | "job_created"
+    | "status_changed"
+    | "parts_requested"
+    | "job_cancelled"
+    | "job_escalated"
+    | "commissioning_failed"
+  status?: ASJobStatus
+  message: string
+  created_at: string
+}
+
+export interface ASOxygenSensorHistoryEntry {
+  id: string
+  job_id: string
+  job_no: string
+  serial_number: string
+  model: string
+  job_type: ASJobType
+  changed: boolean
+  note: string
+  stock_item_id?: string
+  stock_item_name?: string
+  stock_qty_before?: number
+  stock_qty_after?: number
+  created_at: string
+}
+
 export interface ASProactiveCalibrationAsset {
   id: string
   customer_org: string
@@ -277,6 +351,10 @@ export const AS_STORE_KEYS = {
   moduleAssignments: "as_module_assignments",
   asWorkflowSettings: "as_workflow_settings",
   seIncomingRequests: "as_se_incoming_requests",
+  partsRequests: "as_parts_requests",
+  stockNotifications: "as_stock_notifications",
+  equipmentHistory: "as_equipment_history",
+  oxygenSensorHistory: "as_oxygen_sensor_history",
   /** Optimistic concurrency counter for `as_service_jobs` (multi-tab mock) */
   jobsVersion: "as_service_jobs_version",
 } as const
@@ -422,17 +500,21 @@ export function readStore<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(raw) as T
   } catch {
+    // Self-heal corrupted payload to prevent repeated parse failures.
+    window.localStorage.setItem(key, JSON.stringify(fallback))
+    window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key } }))
     return fallback
   }
 }
 
-export function writeStore<T>(key: string, value: T) {
-  if (!hasWindow()) return
+export function writeStore<T>(key: string, value: T): boolean {
+  if (!hasWindow()) return false
   const nextRaw = JSON.stringify(value)
   const prevRaw = window.localStorage.getItem(key)
-  if (prevRaw === nextRaw) return
+  if (prevRaw === nextRaw) return false
   window.localStorage.setItem(key, nextRaw)
   window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key } }))
+  return true
 }
 
 export function readJobs(fallback: ASServiceJob[]) {
@@ -449,7 +531,8 @@ export function readJobsVersion(): number {
 export function writeJobs(value: ASServiceJob[]) {
   if (!hasWindow()) return
   const v = readJobsVersion()
-  writeStore(KEYS.jobs, value)
+  const changed = writeStore(KEYS.jobs, value)
+  if (!changed) return
   window.localStorage.setItem(KEYS.jobsVersion, String(v + 1))
 }
 
@@ -464,7 +547,8 @@ export function writeJobsWithConcurrencyCheck(
   if (!hasWindow()) return { ok: false, nextVersion: expectedVersion }
   const cur = readJobsVersion()
   if (cur !== expectedVersion) return { ok: false, nextVersion: cur }
-  writeStore(KEYS.jobs, jobs)
+  const changed = writeStore(KEYS.jobs, jobs)
+  if (!changed) return { ok: true, nextVersion: cur }
   const next = cur + 1
   window.localStorage.setItem(KEYS.jobsVersion, String(next))
   return { ok: true, nextVersion: next }
@@ -488,6 +572,15 @@ export function writeStockDispatches(value: ASStockDispatch[]) {
 
 export function appendStockDispatch(dispatch: ASStockDispatch) {
   const current = readStockDispatches([])
+  const duplicate = current.some(
+    (d) =>
+      d.job_type === dispatch.job_type &&
+      d.serial_number === dispatch.serial_number &&
+      (d.stock_item_id || "") === (dispatch.stock_item_id || "") &&
+      d.customer_org.trim().toLowerCase() === dispatch.customer_org.trim().toLowerCase() &&
+      d.symptom.trim().toLowerCase() === dispatch.symptom.trim().toLowerCase(),
+  )
+  if (duplicate) return
   let next = dispatch
   if (current.some((d) => d.id === next.id)) {
     next = { ...dispatch, id: newId("sd") }
@@ -570,6 +663,101 @@ export function appendIncomingSERequest(req: ASIncomingSERequest) {
 export function removeIncomingSERequest(id: string) {
   const current = readIncomingSERequests([])
   writeIncomingSERequests(current.filter((r) => r.id !== id))
+}
+
+export function readPartsRequests(fallback: ASPartsRequest[]) {
+  return readStore<ASPartsRequest[]>(KEYS.partsRequests, fallback)
+}
+
+export function writePartsRequests(value: ASPartsRequest[]) {
+  writeStore(KEYS.partsRequests, value)
+}
+
+export function appendPartsRequest(req: ASPartsRequest) {
+  const current = readPartsRequests([])
+  if (current.some((r) => r.id === req.id)) return
+  writePartsRequests([req, ...current])
+}
+
+export function updatePartsRequestStatus(
+  id: string,
+  status: ASPartsRequest["status"],
+): boolean {
+  const current = readPartsRequests([])
+  const now = new Date().toISOString()
+  let changed = false
+  const next = current.map((r) => {
+    if (r.id !== id) return r
+    changed = true
+    if (status === "approved") {
+      return { ...r, status, approved_at: r.approved_at || now }
+    }
+    if (status === "fulfilled") {
+      return { ...r, status, fulfilled_at: r.fulfilled_at || now }
+    }
+    if (status === "rejected") {
+      return { ...r, status, rejected_at: r.rejected_at || now }
+    }
+    return { ...r, status }
+  })
+  if (!changed) return false
+  writePartsRequests(next)
+  return true
+}
+
+export function readStockNotifications(fallback: ASStockNotification[]) {
+  return readStore<ASStockNotification[]>(KEYS.stockNotifications, fallback)
+}
+
+export function writeStockNotifications(value: ASStockNotification[]) {
+  writeStore(KEYS.stockNotifications, value)
+}
+
+export function appendStockNotification(item: ASStockNotification) {
+  const current = readStockNotifications([])
+  if (current.some((n) => n.id === item.id)) return
+  writeStockNotifications([item, ...current])
+}
+
+export function markStockNotificationRead(id: string, at: string = new Date().toISOString()): boolean {
+  const current = readStockNotifications([])
+  let changed = false
+  const next = current.map((n) => {
+    if (n.id !== id || n.read_at) return n
+    changed = true
+    return { ...n, read_at: at }
+  })
+  if (!changed) return false
+  writeStockNotifications(next)
+  return true
+}
+
+export function readEquipmentHistory(fallback: ASEquipmentHistoryEntry[]) {
+  return readStore<ASEquipmentHistoryEntry[]>(KEYS.equipmentHistory, fallback)
+}
+
+export function writeEquipmentHistory(value: ASEquipmentHistoryEntry[]) {
+  writeStore(KEYS.equipmentHistory, value)
+}
+
+export function appendEquipmentHistory(entry: ASEquipmentHistoryEntry) {
+  const current = readEquipmentHistory([])
+  if (current.some((e) => e.id === entry.id)) return
+  writeEquipmentHistory([entry, ...current])
+}
+
+export function readOxygenSensorHistory(fallback: ASOxygenSensorHistoryEntry[]) {
+  return readStore<ASOxygenSensorHistoryEntry[]>(KEYS.oxygenSensorHistory, fallback)
+}
+
+export function writeOxygenSensorHistory(value: ASOxygenSensorHistoryEntry[]) {
+  writeStore(KEYS.oxygenSensorHistory, value)
+}
+
+export function appendOxygenSensorHistory(entry: ASOxygenSensorHistoryEntry) {
+  const current = readOxygenSensorHistory([])
+  if (current.some((e) => e.id === entry.id)) return
+  writeOxygenSensorHistory([entry, ...current])
 }
 
 export function readProactiveCalibrationAssets(fallback: ASProactiveCalibrationAsset[]) {

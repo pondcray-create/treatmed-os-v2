@@ -164,12 +164,12 @@ function OrgDialog({ org, onClose, onSave }: { org: Partial<Organization> | null
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4">
         <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
           <h2 className="font-bold text-lg">{org?.id ? "แก้ไขหน่วยงาน" : "เพิ่มหน่วยงานใหม่"}</h2>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500"><X className="h-4 w-4" /></button>
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="p-6 space-y-4">
           <div>
@@ -209,10 +209,10 @@ function OrgDialog({ org, onClose, onSave }: { org: Partial<Organization> | null
               </div>
             )}
           </div>
-          <button type="button" onClick={() => setForm(f => ({ ...f, one_qa: !f.one_qa }))}
-            className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.one_qa ? "bg-violet-50 border-violet-300" : "bg-gray-50 border-gray-200"}`}>
-            <div className={`w-10 h-6 rounded-full relative transition-colors ${form.one_qa ? "bg-violet-500" : "bg-gray-300"}`}>
-              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${form.one_qa ? "translate-x-5" : "translate-x-1"}`} />
+          <button type="button" role="switch" aria-checked={form.one_qa} onClick={() => setForm(f => ({ ...f, one_qa: !f.one_qa }))}
+            className={`w-full flex items-start gap-3 p-4 rounded-2xl border-2 transition-all ${form.one_qa ? "bg-violet-50 border-violet-300" : "bg-gray-50 border-gray-200"}`}>
+            <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.one_qa ? "bg-violet-500" : "bg-gray-300"}`}>
+              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.one_qa ? "translate-x-4" : "translate-x-0"}`} />
             </div>
             <div className="text-left">
               <p className={`text-sm font-semibold ${form.one_qa ? "text-violet-800" : "text-gray-700"}`}>ใช้งาน One-QA</p>
@@ -238,12 +238,12 @@ function ContactDialog({ contact, onClose, onSave }: { contact: Partial<Contact>
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4">
         <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
           <h2 className="font-bold text-lg">{contact?.id ? "แก้ไขผู้ติดต่อ" : "เพิ่มผู้ติดต่อ"}</h2>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500"><X className="h-4 w-4" /></button>
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-500"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="p-6 space-y-4">
           <div>
@@ -276,10 +276,10 @@ function ContactDialog({ contact, onClose, onSave }: { contact: Partial<Contact>
                 className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" placeholder="email@example.com" />
             </div>
           </div>
-          <button type="button" onClick={() => setForm(f => ({ ...f, is_primary: !f.is_primary }))}
+          <button type="button" role="switch" aria-checked={form.is_primary} onClick={() => setForm(f => ({ ...f, is_primary: !f.is_primary }))}
             className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.is_primary ? "bg-blue-50 border-blue-300" : "bg-gray-50 border-gray-200"}`}>
-            <div className={`w-10 h-6 rounded-full relative transition-colors ${form.is_primary ? "bg-blue-500" : "bg-gray-300"}`}>
-              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${form.is_primary ? "translate-x-5" : "translate-x-1"}`} />
+            <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.is_primary ? "bg-blue-500" : "bg-gray-300"}`}>
+              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.is_primary ? "translate-x-4" : "translate-x-0"}`} />
             </div>
             <div className="text-left">
               <p className={`text-sm font-semibold ${form.is_primary ? "text-blue-800" : "text-gray-700"}`}>ผู้ติดต่อหลัก</p>
@@ -418,7 +418,7 @@ export default function CustomersPage() {
                   <Pencil className="h-3 w-3" /> แก้ไข
                 </button>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="p-4 rounded-2xl bg-gray-50">
                   <p className="text-xs text-gray-400 mb-1">จังหวัด</p>
                   <p className="text-sm font-bold text-gray-900">{selected.province || "—"}</p>

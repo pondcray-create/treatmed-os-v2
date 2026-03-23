@@ -37,7 +37,7 @@ export default function StockMonitorPage() {
       />
 
       {/* Summary */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <Card className="border-destructive/50 bg-destructive/5">
           <CardContent className="p-4 flex items-center gap-3">
             <AlertTriangle className="h-8 w-8 text-destructive" />

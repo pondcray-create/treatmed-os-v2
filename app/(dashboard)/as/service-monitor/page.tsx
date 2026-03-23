@@ -75,7 +75,7 @@ export default function ServiceMonitorPage() {
       </div>
 
       {/* Kanban Board */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {STATUS_COLUMNS.map(col => {
           const colItems = filtered.filter(r => r.status === col.key)
           return (

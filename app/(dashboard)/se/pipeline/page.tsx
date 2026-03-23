@@ -106,7 +106,7 @@ export default function PipelinePage() {
       />
 
       {/* Summary */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">Weighted Pipeline</p><p className="text-2xl font-bold text-primary">{formatCurrency(totalValue)}</p></CardContent></Card>
         <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">Won ทั้งหมด</p><p className="text-2xl font-bold text-green-600">{formatCurrency(wonValue)}</p></CardContent></Card>
         <Card><CardContent className="p-4"><p className="text-sm text-muted-foreground">ดีลทั้งหมด (ไม่รวม Lost)</p><p className="text-2xl font-bold">{deals.filter(d => d.stage !== "lost").length} รายการ</p></CardContent></Card>

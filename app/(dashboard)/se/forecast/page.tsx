@@ -49,7 +49,7 @@ export default function ForecastPage() {
       <PageHeader title="Forecast / พยากรณ์ยอดขาย" description="ภาพรวมยอดขายและ pipeline" icon={TrendingUp} />
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
         <Card>
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Pipeline ทั้งหมด</p>
@@ -76,7 +76,7 @@ export default function ForecastPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-3 gap-6 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         {/* Monthly Bar Chart */}
         <Card className="col-span-2">
           <CardHeader><CardTitle className="text-base">ยอดขาย vs เป้าหมาย (รายเดือน)</CardTitle></CardHeader>

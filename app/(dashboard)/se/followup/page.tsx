@@ -120,7 +120,7 @@ export default function FollowupPage() {
       />
 
       {/* Summary */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <Card className={overdue.length > 0 ? "border-destructive/50 bg-destructive/5" : ""}>
           <CardContent className="p-4 flex items-center gap-3">
             <XCircle className={`h-8 w-8 ${overdue.length > 0 ? "text-destructive" : "text-muted-foreground"}`} />

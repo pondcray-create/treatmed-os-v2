@@ -105,11 +105,9 @@ export default function SEServiceRequestPage() {
     sync()
     window.addEventListener("storage", sync)
     window.addEventListener("as-store-updated", sync)
-    const timer = window.setInterval(sync, 1200)
     return () => {
       window.removeEventListener("storage", sync)
       window.removeEventListener("as-store-updated", sync)
-      window.clearInterval(timer)
     }
   }, [])
 
@@ -171,7 +169,7 @@ export default function SEServiceRequestPage() {
         action={{ label: "สร้าง SR", onClick: openAdd, icon: Plus }}
       />
 
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
         {["pending", "scheduled", "completed", "cancelled"].map(s => (
           <Card key={s}>
             <CardContent className="p-4">

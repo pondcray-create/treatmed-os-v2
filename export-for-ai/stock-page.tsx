@@ -2626,6 +2626,7 @@ export default function StockPage() {
 
   const JOB_TYPE_LABELS: Record<ASServiceJob["job_type"], string> = {
     repair: "Repair",
+    preventive_maintenance: "Preventive Maintenance",
     calibration: "Calibration",
     commissioning: "Commissioning Test",
   }

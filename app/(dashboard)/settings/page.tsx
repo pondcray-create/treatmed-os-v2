@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Plus, Save, Settings2, Trash2 } from "lucide-react"
 import {
+  AS_STORE_KEYS,
   DEFAULT_AS_DROPDOWN_CONFIG,
   DEFAULT_AS_WORKFLOW_SETTINGS,
   DEFAULT_GLOBAL_SETTINGS,
@@ -30,7 +31,8 @@ type SettingsTab = "global" | "as" | "se"
 
 function normalizeUnique(values: string[]) {
   const cleaned = values.map((v) => v.trim()).filter(Boolean)
-  return Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b))
+  // Preserve workflow/entry order while deduplicating.
+  return Array.from(new Set(cleaned))
 }
 
 export default function SettingsPage() {
@@ -169,6 +171,18 @@ export default function SettingsPage() {
     window.setTimeout(() => setSavedKey(null), 2000)
   }
 
+  function clearAllAppData() {
+    if (typeof window === "undefined") return
+    const ok = window.confirm("ล้างข้อมูลทั้งหมดในแอพ (local data) และเริ่มใหม่จากค่าเริ่มต้น?\nการกระทำนี้ย้อนกลับไม่ได้")
+    if (!ok) return
+    const keys = [
+      ...Object.values(AS_STORE_KEYS),
+      "as_offline_queue",
+    ]
+    keys.forEach((k) => window.localStorage.removeItem(k))
+    window.location.href = "/dashboard"
+  }
+
   function addProductGroup() {
     const code = draft.product_code.trim().toUpperCase()
     const label = draft.product_label.trim()
@@ -238,6 +252,13 @@ export default function SettingsPage() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">Central settings for the whole system (AS + SE + Global)</p>
         </div>
+        <button
+          type="button"
+          onClick={clearAllAppData}
+          className="px-3 py-2 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-xs font-bold hover:bg-rose-100"
+        >
+          ล้างข้อมูลแอพทั้งหมด
+        </button>
       </div>
 
       <div className="flex gap-1 p-1 bg-white rounded-2xl border border-gray-100 mb-5 w-fit">
@@ -282,16 +303,18 @@ export default function SettingsPage() {
           <p className="font-bold text-gray-900">Global Settings</p>
           <div className="grid grid-cols-2 gap-4 mt-3">
             <div>
-              <p className="text-xs text-gray-500 mb-1">App Name</p>
+              <label htmlFor="global-app-name" className="text-xs text-gray-500 mb-1 block">App Name</label>
               <input
+                id="global-app-name"
                 value={globalSettings.app_name}
                 onChange={(e) => setGlobalSettings((prev) => ({ ...prev, app_name: e.target.value }))}
                 className={inputClass}
               />
             </div>
             <div>
-              <p className="text-xs text-gray-500 mb-1">Default Currency</p>
+              <label htmlFor="global-default-currency" className="text-xs text-gray-500 mb-1 block">Default Currency</label>
               <input
+                id="global-default-currency"
                 value={globalSettings.default_currency}
                 onChange={(e) => setGlobalSettings((prev) => ({ ...prev, default_currency: e.target.value }))}
                 className={inputClass}
@@ -323,7 +346,7 @@ export default function SettingsPage() {
                   className={inputClass}
                   placeholder="Manufacturer"
                 />
-                <button type="button" onClick={addProductGroup} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
+                <button type="button" aria-label="เพิ่มกลุ่มสินค้า" onClick={addProductGroup} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
                   <Plus className="h-4 w-4" />
                 </button>
               </div>
@@ -357,7 +380,7 @@ export default function SettingsPage() {
                         className={inputClass}
                         placeholder="Add model"
                       />
-                      <button type="button" onClick={addProductModelToGroup} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
+                      <button type="button" aria-label="เพิ่มรุ่นสินค้า" onClick={addProductModelToGroup} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
                         <Plus className="h-4 w-4" />
                       </button>
                     </div>
@@ -365,7 +388,7 @@ export default function SettingsPage() {
                       {selectedCatalog.models.map((m) => (
                         <div key={m} className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-2">
                           <span className="text-sm text-gray-700">{m}</span>
-                          <button type="button" onClick={() => removeProductModelFromGroup(selectedCatalog.code, m)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
+                          <button type="button" aria-label={`ลบรุ่น ${m}`} onClick={() => removeProductModelFromGroup(selectedCatalog.code, m)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
@@ -417,6 +440,7 @@ export default function SettingsPage() {
                   />
                   <button
                     type="button"
+                    aria-label={`เพิ่ม ${section.label}`}
                     onClick={() => addSEItem(section.key)}
                     className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100"
                   >
@@ -432,6 +456,7 @@ export default function SettingsPage() {
                         <span className="text-sm text-gray-700">{item}</span>
                         <button
                           type="button"
+                          aria-label={`ลบ ${item}`}
                           onClick={() => removeSEItem(section.key, item)}
                           className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
                         >
@@ -488,6 +513,7 @@ export default function SettingsPage() {
                   />
                   <button
                     type="button"
+                    aria-label={`เพิ่ม ${section.label}`}
                     onClick={() => addItem(section.key)}
                     className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100"
                   >
@@ -504,6 +530,7 @@ export default function SettingsPage() {
                         <span className="text-sm text-gray-700">{item}</span>
                         <button
                           type="button"
+                          aria-label={`ลบ ${item}`}
                           onClick={() => removeItem(section.key, item)}
                           className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
                         >
@@ -527,7 +554,7 @@ export default function SettingsPage() {
                 className={inputClass}
                 placeholder="Add new status"
               />
-              <button type="button" onClick={addASStatus} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
+              <button type="button" aria-label="เพิ่มสถานะงานบริการ" onClick={addASStatus} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
                 <Plus className="h-4 w-4" />
               </button>
             </div>
@@ -535,7 +562,7 @@ export default function SettingsPage() {
               {asWorkflow.service_statuses.map((s) => (
                 <div key={s} className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-2">
                   <span className="text-sm text-gray-700">{s}</span>
-                  <button type="button" onClick={() => removeASStatus(s)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
+                  <button type="button" aria-label={`ลบสถานะ ${s}`} onClick={() => removeASStatus(s)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>

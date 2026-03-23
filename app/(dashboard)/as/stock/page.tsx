@@ -17,6 +17,10 @@ import {
   readStockDispatches,
   readStockDispatchHistory,
   readStockOutboundTraceLog,
+  readPartsRequests,
+  updatePartsRequestStatus,
+  readStockNotifications,
+  markStockNotificationRead,
   appendStockOutboundTraceLog,
   writeProactiveCalibrationAssets,
   writeJobsWithConcurrencyCheck,
@@ -36,6 +40,8 @@ import {
   type ASServiceJob,
   type ASStockDispatchHistoryEntry,
   type ASStockOutboundTraceLogEntry,
+  type ASPartsRequest,
+  type ASStockNotification,
 } from "@/lib/mock/as-store"
 import { formatThDateFromYMD, formatThDateTime } from "@/lib/format-th-datetime"
 import { newId } from "@/lib/new-id"
@@ -248,6 +254,20 @@ function addYearsToISODate(isoDate: string, years: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+function todayYmdInBangkok(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now)
+  const y = parts.find((p) => p.type === "year")?.value
+  const m = parts.find((p) => p.type === "month")?.value
+  const d = parts.find((p) => p.type === "day")?.value
+  if (!y || !m || !d) return now.toISOString().slice(0, 10)
+  return `${y}-${m}-${d}`
+}
+
 function collectStockInboundSerials(tx: StockTransaction): string[] {
   const list: string[] = []
   const main = tx.serial_number?.trim()
@@ -364,7 +384,7 @@ function ReturnDemoDialog({
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-5">
@@ -372,7 +392,7 @@ function ReturnDemoDialog({
             <Package className="h-5 w-5 text-blue-500" />
             {item.category === "demo" ? "รับคืน Demo" : "รับคืนจาก Loan"}
           </h3>
-          <button onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -429,7 +449,7 @@ function LoanRequestApprovalDialog({
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-4">
@@ -518,7 +538,7 @@ function LoanDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-5">
@@ -601,12 +621,12 @@ function ModuleHistoryDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-bold text-lg">Module Timeline</h3>
-          <button onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -641,12 +661,12 @@ function CustomerLoanHistoryModal({
   onClose: () => void
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-3xl mx-4 p-6">
         <div className="flex items-center justify-between mb-5">
           <h3 className="font-bold text-lg">ประวัติการคืนเครื่องช้า</h3>
-          <button onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -659,7 +679,7 @@ function CustomerLoanHistoryModal({
         </div>
 
         <div className="overflow-auto rounded-2xl border border-gray-100">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-gray-50 border-b border-gray-100">
               <tr>
                 {["วันที่ลูกค้ายืม", "กำหนดคืน", "วันที่คืนจริง", "Overdue (วัน)", "แหล่งที่มา"].map((h) => (
@@ -843,7 +863,7 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 p-6 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
@@ -1036,7 +1056,7 @@ function AddBookingDialog({
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-5">
@@ -1139,12 +1159,12 @@ function AddItemDialog({ item, onClose, onSave }: { item: Partial<StockItem>|nul
     onClose()
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 sticky top-0 bg-white rounded-t-3xl">
           <h2 className="font-bold text-lg">{item?.id ? "Edit Item Master" : "Add Item Master"}</h2>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X className="h-4 w-4" /></button>
+          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="p-6 space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -1167,10 +1187,10 @@ function AddItemDialog({ item, onClose, onSave }: { item: Partial<StockItem>|nul
             <div><label className="block text-sm font-medium text-gray-700 mb-1.5">Min Stock</label><input type="number" min={0} value={form.min_qty} onChange={e=>setForm(f=>({...f,min_qty:Number(e.target.value)}))} className={inp} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1.5">หน่วย</label><input value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} className={inp} placeholder="ชิ้น" /></div>
           </div>
-          <button type="button" onClick={()=>setForm(f=>({...f,has_serial:!f.has_serial}))}
+          <button type="button" role="switch" aria-checked={form.has_serial} onClick={()=>setForm(f=>({...f,has_serial:!f.has_serial}))}
             className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.has_serial ? "bg-violet-50 border-violet-300" : "bg-gray-50 border-gray-200"}`}>
-            <div className={`w-10 h-6 rounded-full relative transition-colors ${form.has_serial ? "bg-violet-500" : "bg-gray-300"}`}>
-              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${form.has_serial ? "translate-x-5" : "translate-x-1"}`} />
+            <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.has_serial ? "bg-violet-500" : "bg-gray-300"}`}>
+              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.has_serial ? "translate-x-4" : "translate-x-0"}`} />
             </div>
             <p className={`text-sm font-semibold ${form.has_serial ? "text-violet-800" : "text-gray-700"}`}>มี Serial Number</p>
           </button>
@@ -1340,7 +1360,7 @@ function ReceiveProductDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10 rounded-t-3xl">
@@ -1566,7 +1586,7 @@ function SellStockDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-4">
@@ -1629,21 +1649,11 @@ export default function StockPage() {
   const itemsVersionRef = useRef(0)
   const jobsVersionRef = useRef(0)
 
-  const [items, setItems] = useState<StockItem[]>(() => {
-    const saved = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
-    if (saved && saved.length > 0) return saved
-    return USE_STOCK_DEV_SEED ? MOCK_ITEMS : []
-  })
-  const [transactions, setTransactions] = useState<StockTransaction[]>(() => {
-    const saved = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
-    if (saved && saved.length > 0) return saved
-    return USE_STOCK_DEV_SEED ? MOCK_TRANSACTIONS : []
-  })
-  const [bookings, setBookings] = useState<Booking[]>(() => {
-    const saved = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
-    if (saved !== null && Array.isArray(saved)) return saved
-    return USE_STOCK_DEV_SEED ? MOCK_BOOKINGS : []
-  })
+  const [items, setItems] = useState<StockItem[]>(USE_STOCK_DEV_SEED ? MOCK_ITEMS : [])
+  const [transactions, setTransactions] = useState<StockTransaction[]>(
+    USE_STOCK_DEV_SEED ? MOCK_TRANSACTIONS : [],
+  )
+  const [bookings, setBookings] = useState<Booking[]>(USE_STOCK_DEV_SEED ? MOCK_BOOKINGS : [])
   const [tab, setTab] = useState<Tab>("all")
   const [search, setSearch] = useState("")
   const [filterCat, setFilterCat] = useState<StockCategory|"all">("all")
@@ -1664,6 +1674,8 @@ export default function StockPage() {
   const [dispatchAcceptedHistory, setDispatchAcceptedHistory] = useState<ASStockDispatchHistoryEntry[]>([])
   const [completedStockReturns, setCompletedStockReturns] = useState<ASServiceJob[]>([])
   const [outboundTraceLog, setOutboundTraceLog] = useState<ASStockOutboundTraceLogEntry[]>([])
+  const [partsRequests, setPartsRequests] = useState<ASPartsRequest[]>([])
+  const [stockNotifications, setStockNotifications] = useState<ASStockNotification[]>([])
   const [serviceHistorySearch, setServiceHistorySearch] = useState("")
   const [serviceHistoryJobType, setServiceHistoryJobType] = useState<ServiceJobTypeFilter>("all")
   /** ยืนยัน ยกเลิก / งานเสร็จ จากวิดเจ็ตสถานะ Service */
@@ -1690,7 +1702,7 @@ export default function StockPage() {
   const stockOnLoan = items.filter((i) => i.status === "on_loan")
   const reservedItems = items.filter((i) => i.status === "reserved")
   const soldItems = items.filter((i) => i.status === "sold")
-  const today = new Date().toISOString().split("T")[0]
+  const today = todayYmdInBangkok()
 
   const uniqueBrands = Array.from(new Set(items.map((i) => i.brand).filter(Boolean))).sort((a, b) => a.localeCompare(b))
 
@@ -1754,6 +1766,18 @@ export default function StockPage() {
   }
 
   useEffect(() => {
+    // Hydrate from localStorage only after mount to avoid SSR/client mismatch.
+    const savedItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+    if (savedItems && Array.isArray(savedItems) && savedItems.length > 0) setItems(savedItems)
+
+    const savedTx = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
+    if (savedTx && Array.isArray(savedTx) && savedTx.length > 0) setTransactions(savedTx)
+
+    const savedBookings = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
+    if (savedBookings && Array.isArray(savedBookings)) setBookings(savedBookings)
+  }, [])
+
+  useEffect(() => {
     itemsVersionRef.current = readStockItemsVersion()
     jobsVersionRef.current = readJobsVersion()
   }, [])
@@ -1762,6 +1786,8 @@ export default function StockPage() {
     const syncJobsAndDispatches = () => {
       const jobs = readJobs([])
       const dispatches = readStockDispatches([])
+      const parts = readPartsRequests([])
+      const notifications = readStockNotifications([])
       setServiceRequestsFromStock(
         jobs.filter(
           (j) =>
@@ -1784,6 +1810,8 @@ export default function StockPage() {
       setPendingInServiceInbox(dispatches.length)
       setLoanReturnHistory(readLoanReturnHistory([]))
       setModuleAssignments(readModuleAssignments([]))
+      setPartsRequests(parts)
+      setStockNotifications(notifications)
       jobsVersionRef.current = readJobsVersion()
     }
 
@@ -1856,6 +1884,35 @@ export default function StockPage() {
     window.addEventListener("click", closeMenu)
     return () => window.removeEventListener("click", closeMenu)
   }, [actionMenuId])
+
+  const actionablePartsRequests = useMemo(
+    () => partsRequests.filter((r) => r.status === "pending" || r.status === "approved"),
+    [partsRequests],
+  )
+  const unreadStockNotifications = useMemo(
+    () => stockNotifications.filter((n) => !n.read_at),
+    [stockNotifications],
+  )
+
+  function approvePartsRequest(req: ASPartsRequest) {
+    const ok = updatePartsRequestStatus(req.id, "approved")
+    if (!ok) return
+    setPartsRequests(readPartsRequests([]))
+  }
+
+  function fulfillPartsRequest(req: ASPartsRequest) {
+  const latest = readPartsRequests([]).find((r) => r.id === req.id)
+  if (!latest || latest.status !== "approved") return
+    const ok = updatePartsRequestStatus(req.id, "fulfilled")
+    if (!ok) return
+    setPartsRequests(readPartsRequests([]))
+  }
+
+  function markNotificationAsRead(id: string) {
+    const ok = markStockNotificationRead(id)
+    if (!ok) return
+    setStockNotifications(readStockNotifications([]))
+  }
 
   const demoLoans = demoOnLoan
   const nearDueLoans = demoLoans.filter((i) => i.loan_due && diffDays(today, i.loan_due) <= 3 && diffDays(today, i.loan_due) >= 0)
@@ -2626,6 +2683,7 @@ export default function StockPage() {
 
   const JOB_TYPE_LABELS: Record<ASServiceJob["job_type"], string> = {
     repair: "Repair",
+    preventive_maintenance: "Preventive Maintenance",
     calibration: "Calibration",
     commissioning: "Commissioning Test",
   }
@@ -2702,7 +2760,7 @@ export default function StockPage() {
       )}
 
       {(nearDueLoans.length > 0 || overdueLoans.length > 0 || badCustomers.length > 0) && (
-        <div className="glass-panel rounded-2xl p-4 mb-4 premium-glow">
+        <div className="glass-panel rounded-2xl p-3 mb-3 premium-glow">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-gray-900">Loan Alerts (Demo)</p>
@@ -2732,7 +2790,7 @@ export default function StockPage() {
       )}
 
       {pendingStockReturns.length > 0 && (
-        <div className="glass-panel rounded-2xl p-4 mb-4 border-2 border-amber-200 bg-amber-50/40">
+        <div className="glass-panel rounded-2xl p-3 mb-3 border-2 border-amber-200 bg-amber-50/40">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
               <p className="text-sm font-bold text-amber-900">รับเครื่องกลับจาก Service (ปิดงานแล้ว)</p>
@@ -2769,7 +2827,136 @@ export default function StockPage() {
         </div>
       )}
 
-      <div className="glass-panel rounded-2xl p-4 mb-4">
+      {(actionablePartsRequests.length > 0 || unreadStockNotifications.length > 0) && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-4">
+          <div className="glass-panel rounded-2xl p-3 border border-amber-200 bg-amber-50/40">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-bold text-amber-900">Parts Requests จาก Service</p>
+              <span className="px-2 py-0.5 rounded-lg bg-amber-200 text-amber-900 text-xs font-bold">
+                {actionablePartsRequests.length}
+              </span>
+            </div>
+            {actionablePartsRequests.length === 0 ? (
+              <p className="text-xs text-amber-800">ยังไม่มีคำขออะไหล่ค้าง</p>
+            ) : (
+              <div className="space-y-2 max-h-[220px] overflow-auto pr-1">
+                {actionablePartsRequests.map((r) => (
+                  <div key={r.id} className="bg-white rounded-xl border border-amber-100 px-3 py-2">
+                    <p className="text-xs font-mono text-gray-500">{r.job_no}</p>
+                    <p className="text-sm font-semibold text-gray-900">{r.part_name} x{r.qty}</p>
+                    <p className="text-xs text-gray-600">{r.model} · {r.customer_org}</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      สถานะ: {r.status === "pending" ? "รออนุมัติ" : "อนุมัติแล้ว รอจ่าย"}
+                    </p>
+                    {r.note && <p className="text-xs text-gray-500 mt-0.5">โน้ต: {r.note}</p>}
+                    <div className="mt-2">
+                      {(() => {
+                        const step =
+                          r.status === "pending"
+                            ? 0
+                            : r.status === "approved"
+                              ? 1
+                              : r.status === "fulfilled"
+                                ? 2
+                                : -1
+                        const labels = ["Pending", "Approved", "Fulfilled"]
+                        return (
+                          <>
+                            <div className="flex items-center">
+                              {[0, 1, 2].map((i) => (
+                                <div key={i} className="flex items-center flex-1">
+                                  <div
+                                    className={`h-2.5 w-2.5 rounded-full ${
+                                      step >= 0 && i <= step ? "bg-emerald-500" : "bg-gray-300"
+                                    }`}
+                                  />
+                                  {i < 2 && (
+                                    <div
+                                      className={`h-0.5 flex-1 mx-1 ${
+                                        step >= 0 && i < step ? "bg-emerald-500" : "bg-gray-200"
+                                      }`}
+                                    />
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                              {labels.map((lb, i) => (
+                                <span
+                                  key={lb}
+                                  className={`text-[10px] ${
+                                    step >= 0 && i <= step ? "text-emerald-700 font-semibold" : "text-gray-400"
+                                  }`}
+                                >
+                                  {lb}
+                                </span>
+                              ))}
+                            </div>
+                            {r.status === "rejected" && (
+                              <p className="text-[10px] text-rose-600 mt-1 font-semibold">Rejected</p>
+                            )}
+                          </>
+                        )
+                      })()}
+                    </div>
+                    <div className="mt-1.5 space-y-0.5">
+                      {r.approved_at && <p className="text-[10px] text-gray-500">Approved at: {formatThDateTime(r.approved_at)}</p>}
+                      {r.fulfilled_at && <p className="text-[10px] text-gray-500">Fulfilled at: {formatThDateTime(r.fulfilled_at)}</p>}
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => approvePartsRequest(r)}
+                        disabled={r.status !== "pending"}
+                        className="px-2.5 py-1 rounded-lg bg-blue-500 disabled:bg-gray-300 text-white text-[11px] font-bold hover:bg-blue-600"
+                      >
+                        อนุมัติจ่าย
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => fulfillPartsRequest(r)}
+                        disabled={r.status !== "approved"}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-500 disabled:bg-gray-300 text-white text-[11px] font-bold hover:bg-emerald-600"
+                      >
+                        จ่ายแล้ว
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1">อนุมัติ {"->"} จ่ายของจริง</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="glass-panel rounded-2xl p-3 border border-blue-200 bg-blue-50/40">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-bold text-blue-900">Live Notifications จาก Service</p>
+              <span className="px-2 py-0.5 rounded-lg bg-blue-200 text-blue-900 text-xs font-bold">
+                {unreadStockNotifications.length}
+              </span>
+            </div>
+            {unreadStockNotifications.length === 0 ? (
+              <p className="text-xs text-blue-800">ไม่มีแจ้งเตือนใหม่</p>
+            ) : (
+              <div className="space-y-2 max-h-[220px] overflow-auto pr-1">
+                {unreadStockNotifications.map((n) => (
+                  <div key={n.id} className="bg-white rounded-xl border border-blue-100 px-3 py-2">
+                    <p className="text-sm font-semibold text-gray-900">{n.title}</p>
+                    <p className="text-xs text-gray-600 mt-0.5">{n.message}</p>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <p className="text-[11px] text-gray-500">{formatThDateTime(n.created_at)}</p>
+                      <button type="button" onClick={() => markNotificationAsRead(n.id)} className="px-2 py-0.5 rounded-lg bg-gray-100 text-gray-700 text-[11px] font-bold hover:bg-gray-200">
+                        รับทราบ
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="glass-panel rounded-2xl p-3 mb-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-gray-800">สถานะงานที่ส่งไป Service</p>
           <div className="flex items-center gap-2">
@@ -2910,7 +3097,7 @@ export default function StockPage() {
             </select>
           </div>
           <div className="flex-1 overflow-auto rounded-2xl border border-white/70 bg-white/70 backdrop-blur-xl shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1080px] text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   {["Item / SN","Brand","Category","Qty","Min","Days In Stock","Cal ล่าสุด","Status","Quick Action"].map((h) => (
@@ -3312,7 +3499,7 @@ export default function StockPage() {
               <p className="text-sm text-gray-400">ยังไม่มีประวัติการตัดขาย</p>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-gray-100 max-h-[min(70vh,520px)] overflow-y-auto">
-                <table className="w-full text-xs">
+                <table className="w-full min-w-[920px] text-xs">
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
                       <th className="text-left px-3 py-2 font-bold text-gray-500">แหล่ง</th>

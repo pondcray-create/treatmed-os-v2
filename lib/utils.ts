@@ -7,6 +7,7 @@ export function cn(...inputs: ClassValue[]) {
 
 export function formatDate(date: string | Date) {
   return new Date(date).toLocaleDateString("th-TH", {
+    timeZone: "Asia/Bangkok",
     year: "numeric",
     month: "short",
     day: "numeric",

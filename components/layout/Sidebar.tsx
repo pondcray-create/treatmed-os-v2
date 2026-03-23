@@ -9,6 +9,7 @@ import {
   Wrench,
   Activity,
   CalendarClock,
+  Bell,
   TrendingUp,
   Briefcase,
   CalendarCheck,
@@ -49,6 +50,8 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Service Request", href: "/as/service-request", icon: <Wrench size={16} /> },
       { label: "Service Monitor", href: "/as/service-monitor", icon: <Activity size={16} /> },
       { label: "Calibration Proactive", href: "/as/calibration-proactive", icon: <CalendarClock size={16} /> },
+      { label: "Notifications", href: "/as/notifications", icon: <Bell size={16} /> },
+      { label: "Oxygen History", href: "/as/oxygen-history", icon: <FileText size={16} /> },
     ],
   },
   {
@@ -128,6 +131,8 @@ export function Sidebar() {
             <div key={group.label} className="pt-2">
               <button
                 onClick={() => toggleGroup(group.label)}
+                aria-expanded={isOpen}
+                aria-controls={`nav-group-${group.label.replace(/\s+/g, "-").toLowerCase()}`}
                 className={cn(
                   "w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs font-semibold uppercase tracking-wider",
                   group.color,
@@ -139,7 +144,10 @@ export function Sidebar() {
               </button>
 
               {isOpen && (
-                <div className="mt-1 space-y-0.5">
+                <div
+                  id={`nav-group-${group.label.replace(/\s+/g, "-").toLowerCase()}`}
+                  className="mt-1 space-y-0.5"
+                >
                   {group.items.map((item) => (
                     <Link
                       key={item.href}

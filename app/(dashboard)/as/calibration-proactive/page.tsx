@@ -67,10 +67,10 @@ export default function CalibrationProactivePage() {
     const sync = () => setAssets(readProactiveCalibrationAssets(SEED_ASSETS))
     sync()
     window.addEventListener("storage", sync)
-    const timer = window.setInterval(sync, 1200)
+    window.addEventListener("as-store-updated", sync)
     return () => {
       window.removeEventListener("storage", sync)
-      window.clearInterval(timer)
+      window.removeEventListener("as-store-updated", sync)
     }
   }, [])
 
@@ -288,12 +288,12 @@ export default function CalibrationProactivePage() {
       </div>
 
       {openForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setOpenForm(false)} />
           <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 p-6">
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-bold text-lg">เพิ่มเครื่องสำหรับ Proactive Calibration</h3>
-              <button onClick={() => setOpenForm(false)} className="p-1.5 rounded-xl hover:bg-gray-100">
+              <button aria-label="ปิดหน้าต่าง" onClick={() => setOpenForm(false)} className="p-1.5 rounded-xl hover:bg-gray-100">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -302,7 +302,7 @@ export default function CalibrationProactivePage() {
                 <input required value={form.customer_org} onChange={(e) => setForm((f) => ({ ...f, customer_org: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="หน่วยงานลูกค้า *" />
                 <input value={form.customer_name} onChange={(e) => setForm((f) => ({ ...f, customer_name: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="ผู้ติดต่อ" />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <input required value={form.manufacturer} onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="Manufacturer *" />
                 <input required value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="Model *" />
                 <input required value={form.serial_number} onChange={(e) => setForm((f) => ({ ...f, serial_number: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="SN *" />
