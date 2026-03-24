@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:stock-hydration-guard": "node scripts/tests/stock-hydration-guard.test.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

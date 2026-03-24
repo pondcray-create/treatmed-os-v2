@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
-import { Package, Plus, Search, X, AlertTriangle, CheckCircle2, Wrench, FlaskConical, ShoppingCart, Zap, Drill, Camera, ChevronRight, Bookmark, Send, User, Building2, ClipboardList, MoreHorizontal, ArrowDownCircle } from "lucide-react"
+import { Package, Plus, Search, X, AlertTriangle, CheckCircle2, Wrench, FlaskConical, ShoppingCart, Zap, Drill, Camera, ChevronRight, Bookmark, Send, User, Building2, ClipboardList, MoreHorizontal, ArrowDownCircle, Bell } from "lucide-react"
 import {
   appendModuleAssignment,
   appendLoanReturnHistory,
@@ -10,6 +10,7 @@ import {
   readLoanReturnHistory,
   readModuleAssignments,
   readOrganizations,
+  readDropdownConfig,
   readProductCatalog,
   upsertOrganizationByName,
   writeOrganizations,
@@ -31,6 +32,7 @@ import {
   readStockItemsVersion,
   writeStockTransactionsLedger,
   writeStockBookingsLedger,
+  type ASDropdownConfig,
   type ASContact,
   type ASModuleAssignment,
   type ASLoanReturnHistory,
@@ -43,7 +45,7 @@ import {
   type ASPartsRequest,
   type ASStockNotification,
 } from "@/lib/mock/as-store"
-import { formatThDateFromYMD, formatThDateTime } from "@/lib/format-th-datetime"
+import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/format-th-datetime"
 import { newId } from "@/lib/new-id"
 import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
 
@@ -69,9 +71,16 @@ interface StockItem {
   sold_to_org?: string
   sold_contact?: string
   sold_customer_po?: string
+  sold_warranty?: string
+  sold_pm_per_year?: number
+  sold_calibrations_per_year?: number
+  sold_calibration_plan_start?: string
+  sold_calibration_plan_end?: string
   sold_at?: string
   /** วันที่สอบเทียบล่าสุดของเครื่อง (กรอกตอนรับเข้า) */
   last_calibration_date?: string
+  /** Due date สอบเทียบของเครื่อง */
+  calibration_due_date?: string
   /** ไม่ใช่ Demo: ต้องอนุมัติก่อนเปิดฟอร์ม Loan — Demo ไม่ใช้ฟิลด์นี้ */
   loan_approval_status?: "pending" | "approved"
   loan_approval_note?: string
@@ -103,7 +112,7 @@ interface StockTransaction {
   companion_serial?: string
   /** มาจาก Input Product เท่านั้น — ใช้ลง Calibration Proactive */
   input_product_receive?: boolean
-  /** วันที่ Cal ล่าสุดของเครื่องตอนรับเข้า — ถ้าว่างใช้วันรับเข้าแทน (due = วันนี้ + 1 ปี) */
+  /** วันที่ Cal ล่าสุดของเครื่องตอนรับเข้า — ถ้าว่างใช้วันรับเข้าแทน */
   equipment_calibration_date?: string
 }
 
@@ -115,6 +124,9 @@ interface Booking {
 interface DispatchForm {
   item: StockItem; job_type: "repair" | "calibration" | "commissioning"
   customer_org: string; customer_name: string; symptom: string
+  receive_channel: "พนักงาน" | "ขนส่งเอกชน"
+  tracking_in: string
+  received_by: string
 }
 
 /** Demo ยืมออกได้ทันที — ไม่ใช่ Demo ต้องอนุมัติก่อน */
@@ -162,6 +174,9 @@ function tryApplyStockTx(
           loan_date: tx.set_status === "in_stock" ? undefined : i.loan_date,
           stocked_at: i.stocked_at || tx.date,
           last_calibration_date: tx.equipment_calibration_date?.trim() || i.last_calibration_date,
+          calibration_due_date: tx.equipment_calibration_date?.trim()
+            ? addYearsToISODate(tx.equipment_calibration_date.trim(), 1)
+            : i.calibration_due_date,
         }
       }),
     }
@@ -189,6 +204,9 @@ function tryApplyStockTx(
     qc_customer_contact: tx.customer_contact,
     stocked_at: tx.date,
     last_calibration_date: tx.equipment_calibration_date?.trim() || undefined,
+    calibration_due_date: tx.equipment_calibration_date?.trim()
+      ? addYearsToISODate(tx.equipment_calibration_date.trim(), 1)
+      : undefined,
   }
   return { ok: true, next: [nextItem, ...p] }
 }
@@ -254,6 +272,13 @@ function addYearsToISODate(isoDate: string, years: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+function addMonthsToISODate(isoDate: string, months: number): string {
+  const d = new Date(`${isoDate}T12:00:00`)
+  if (Number.isNaN(d.getTime())) return isoDate
+  d.setMonth(d.getMonth() + months)
+  return d.toISOString().slice(0, 10)
+}
+
 function todayYmdInBangkok(now: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
@@ -293,7 +318,8 @@ function collectStockInboundSerials(tx: StockTransaction): string[] {
 
 /**
  * ลง / อัปเดต `as_proactive_calibration_assets` เมื่อรับเข้าผ่าน Input Product
- * — last_calibration_date = equipment_calibration_date หรือวันรับเข้า, due_date = last_cal + 1 ปี
+ * — last_calibration_date = equipment_calibration_date หรือวันรับเข้า
+ * — due_date = last_cal + 1 ปี (คำนวณอัตโนมัติ)
  */
 function upsertProactiveCalibrationFromInputProduct(tx: StockTransaction) {
   if (tx.type !== "in" || !tx.input_product_receive) return
@@ -400,7 +426,12 @@ function ReturnDemoDialog({
         <div className="p-3 bg-blue-50 rounded-2xl mb-4 border border-blue-100">
           <p className="font-semibold text-gray-900 text-sm">{item.name}</p>
           {item.serial_number && <p className="text-xs font-mono text-blue-600 mt-0.5">SN: {item.serial_number}</p>}
-          {item.loan_due && <p className="text-xs text-blue-600 mt-0.5">กำหนดคืน: {item.loan_due}</p>}
+          {item.loan_due && (
+            <p className="text-[10px] text-blue-600 mt-0.5 leading-tight">
+              กำหนดคืน: {formatThDateFromYMD(item.loan_due)}
+              <span className="font-mono text-[9px] text-blue-500 ml-1">{item.loan_due}</span>
+            </p>
+          )}
         </div>
 
         <form onSubmit={submit} className="space-y-4">
@@ -416,6 +447,7 @@ function ReturnDemoDialog({
               onChange={(e) => setLoanDate(e.target.value)}
               className={inp}
             />
+            <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(loanDate)}</p>
           </div>
           {dateErr && <p className="text-xs text-red-600">{dateErr}</p>}
           <div className="flex gap-3 pt-2">
@@ -588,6 +620,7 @@ function LoanDialog({
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">กำหนดคืน *</label>
             <input type="date" required value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inp} />
+            <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(dueDate)}</p>
           </div>
           {dueErr && <p className="text-xs text-red-600">{dueErr}</p>}
           <div className="flex gap-3 pt-2">
@@ -787,7 +820,16 @@ function Pill({ label, color }: { label: string; color: string }) {
 
 // ── Dispatch to Services Dialog ───────────────────────────────────────────────
 function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose: () => void; onConfirm: (d: DispatchForm) => void }) {
-  const [form, setForm] = useState<DispatchForm>({ item, job_type: "repair", customer_org: "", customer_name: "", symptom: "" })
+  const [form, setForm] = useState<DispatchForm>({
+    item,
+    job_type: "repair",
+    customer_org: "",
+    customer_name: "",
+    symptom: "",
+    receive_channel: "พนักงาน",
+    tracking_in: "",
+    received_by: "",
+  })
   const [orgs, setOrgs] = useState<ASOrganization[]>([])
   const [customerNotInDb, setCustomerNotInDb] = useState(false)
   const [freeOrgName, setFreeOrgName] = useState("")
@@ -806,7 +848,16 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
       setCustomerNotInDb(false)
       setFreeOrgName("")
       setFreeContactName("")
-      setForm({ item, job_type: "repair", customer_org: "", customer_name: "", symptom: "" })
+      setForm({
+        item,
+        job_type: "repair",
+        customer_org: "",
+        customer_name: "",
+        symptom: "",
+        receive_channel: "พนักงาน",
+        tracking_in: "",
+        received_by: "",
+      })
       return
     }
 
@@ -827,13 +878,25 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
         customer_org: orgMatch.name,
         customer_name: linked.contact || primary || "",
         symptom: "",
+        receive_channel: "พนักงาน",
+        tracking_in: "",
+        received_by: "",
       })
       setLinkedHint(`เติมชื่อลูกค้าอัตโนมัติจาก ${linked.sourceLabel} — ตรวจสอบก่อนส่ง`)
     } else {
       setCustomerNotInDb(true)
       setFreeOrgName(linked.org)
       setFreeContactName(linked.contact)
-      setForm({ item, job_type: "repair", customer_org: "", customer_name: "", symptom: "" })
+      setForm({
+        item,
+        job_type: "repair",
+        customer_org: "",
+        customer_name: "",
+        symptom: "",
+        receive_channel: "พนักงาน",
+        tracking_in: "",
+        received_by: "",
+      })
       setLinkedHint(
         linked.contact
           ? `เติมจาก ${linked.sourceLabel} — หน่วยงานยังไม่อยู่ในรายชื่อ (โหมดกรอกใหม่)`
@@ -857,9 +920,17 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
     }
     if (!org || !form.symptom.trim()) return
     if (customerNotInDb && !contact) return
+    if ((form.job_type === "repair" || form.job_type === "calibration") && form.receive_channel === "ขนส่งเอกชน" && !form.tracking_in.trim()) return
+    if ((form.job_type === "repair" || form.job_type === "calibration") && form.receive_channel === "พนักงาน" && !form.received_by.trim()) return
     const nextOrgs = upsertOrganizationByName(readOrganizations([]), org, contact || undefined)
     writeOrganizations(nextOrgs)
-    onConfirm({ ...form, customer_org: org, customer_name: contact || "ไม่ระบุ" })
+    onConfirm({
+      ...form,
+      customer_org: org,
+      customer_name: contact || "ไม่ระบุ",
+      tracking_in: form.tracking_in.trim(),
+      received_by: form.received_by.trim(),
+    })
     onClose()
   }
   return (
@@ -990,6 +1061,51 @@ function DispatchDialog({ item, onClose, onConfirm }: { item: StockItem; onClose
               placeholder="อาการเสียหรือเหตุผลที่ส่งซ่อม/สอบเทียบ/Commissioning"
             />
           </div>
+          {(form.job_type === "repair" || form.job_type === "calibration") && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">ช่องทางรับเครื่อง *</label>
+                <div className="flex gap-2">
+                  {(["พนักงาน", "ขนส่งเอกชน"] as const).map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, receive_channel: c }))}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-all ${
+                        form.receive_channel === c ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-500"
+                      }`}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {form.receive_channel === "ขนส่งเอกชน" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Tracking In *</label>
+                  <input
+                    required
+                    value={form.tracking_in}
+                    onChange={(e) => setForm((f) => ({ ...f, tracking_in: e.target.value }))}
+                    className={inp}
+                    placeholder="เลขพัสดุขาเข้า"
+                  />
+                </div>
+              )}
+              {form.receive_channel === "พนักงาน" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">ผู้รับเครื่อง (พนักงาน) *</label>
+                  <input
+                    required
+                    value={form.received_by}
+                    onChange={(e) => setForm((f) => ({ ...f, received_by: e.target.value }))}
+                    className={inp}
+                    placeholder="ชื่อผู้รับเครื่อง"
+                  />
+                </div>
+              )}
+            </>
+          )}
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
               ยกเลิก
@@ -1147,6 +1263,7 @@ function AddItemDialog({ item, onClose, onSave }: { item: Partial<StockItem>|nul
     min_qty: item?.min_qty ?? 0,
     unit: item?.unit ?? "ชิ้น",
     last_calibration_date: item?.last_calibration_date ?? "",
+    calibration_due_date: item?.calibration_due_date ?? "",
   })
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
   function submit(e: React.FormEvent) {
@@ -1155,6 +1272,7 @@ function AddItemDialog({ item, onClose, onSave }: { item: Partial<StockItem>|nul
       ...item,
       ...form,
       last_calibration_date: form.last_calibration_date.trim() || undefined,
+      calibration_due_date: form.calibration_due_date.trim() || undefined,
     })
     onClose()
   }
@@ -1187,26 +1305,36 @@ function AddItemDialog({ item, onClose, onSave }: { item: Partial<StockItem>|nul
             <div><label className="block text-sm font-medium text-gray-700 mb-1.5">Min Stock</label><input type="number" min={0} value={form.min_qty} onChange={e=>setForm(f=>({...f,min_qty:Number(e.target.value)}))} className={inp} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1.5">หน่วย</label><input value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} className={inp} placeholder="ชิ้น" /></div>
           </div>
-          <button type="button" role="switch" aria-checked={form.has_serial} onClick={()=>setForm(f=>({...f,has_serial:!f.has_serial}))}
-            className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.has_serial ? "bg-violet-50 border-violet-300" : "bg-gray-50 border-gray-200"}`}>
-            <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.has_serial ? "bg-violet-500" : "bg-gray-300"}`}>
-              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.has_serial ? "translate-x-4" : "translate-x-0"}`} />
+          {item?.id ? (
+            <>
+              <button type="button" role="switch" aria-checked={form.has_serial} onClick={()=>setForm(f=>({...f,has_serial:!f.has_serial}))}
+                className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.has_serial ? "bg-violet-50 border-violet-300" : "bg-gray-50 border-gray-200"}`}>
+                <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.has_serial ? "bg-violet-500" : "bg-gray-300"}`}>
+                  <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.has_serial ? "translate-x-4" : "translate-x-0"}`} />
+                </div>
+                <p className={`text-sm font-semibold ${form.has_serial ? "text-violet-800" : "text-gray-700"}`}>มี Serial Number</p>
+              </button>
+              {form.has_serial && (
+                <div><label className="block text-sm font-medium text-gray-700 mb-1.5">Serial Number</label><input value={form.serial_number} onChange={e=>setForm(f=>({...f,serial_number:e.target.value}))} className={inp} placeholder="SN ของสินค้า" /></div>
+              )}
+              <div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Cal ล่าสุด (วันที่สอบเทียบล่าสุด)</label>
+                  <input
+                    type="date"
+                    value={form.last_calibration_date}
+                    onChange={(e) => setForm((f) => ({ ...f, last_calibration_date: e.target.value }))}
+                    className={inp}
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">{thDateInputBeHint(form.last_calibration_date)}</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700">
+              Item Master ใช้กำหนดเกณฑ์ประเภทสินค้าเท่านั้น (ไม่ต้องลง SN และไม่ต้องกำหนดวันสอบเทียบ)
             </div>
-            <p className={`text-sm font-semibold ${form.has_serial ? "text-violet-800" : "text-gray-700"}`}>มี Serial Number</p>
-          </button>
-          {form.has_serial && (
-            <div><label className="block text-sm font-medium text-gray-700 mb-1.5">Serial Number</label><input value={form.serial_number} onChange={e=>setForm(f=>({...f,serial_number:e.target.value}))} className={inp} placeholder="SN ของสินค้า" /></div>
           )}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Cal ล่าสุด (วันที่สอบเทียบล่าสุด)</label>
-            <input
-              type="date"
-              value={form.last_calibration_date}
-              onChange={(e) => setForm((f) => ({ ...f, last_calibration_date: e.target.value }))}
-              className={inp}
-            />
-            <p className="text-[11px] text-gray-500 mt-1">ไม่บังคับ — แสดงในตาราง Stock และใช้ประกอบแผน Proactive เมื่อรับเข้าผ่าน Input Product</p>
-          </div>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">ยกเลิก</button>
             <button type="submit" className="flex-1 py-2.5 rounded-xl bg-blue-500 text-white text-sm font-bold hover:bg-blue-600">{item?.id ? "Save" : "Add Item Master"}</button>
@@ -1231,10 +1359,12 @@ function serialsUniqueInsensitive(parts: string[]) {
 // ── Receive / Input Product (รับเข้าคลัง) ─────────────────────────────────────
 function ReceiveProductDialog({
   todayISO,
+  existingItems,
   onClose,
   onApply,
 }: {
   todayISO: string
+  existingItems: StockItem[]
   onClose: () => void
   onApply: (tx: StockTransaction) => void
 }) {
@@ -1243,6 +1373,7 @@ function ReceiveProductDialog({
   const [note, setNote] = useState("")
   const [qtyIn, setQtyIn] = useState(1)
   const [productCatalog, setProductCatalog] = useState<ProductCatalogGroup[]>(readProductCatalog())
+  const [asDropdown, setAsDropdown] = useState<ASDropdownConfig>(() => readDropdownConfig())
   const [selectedManufacturer, setSelectedManufacturer] = useState("")
   const [selectedCatalogModel, setSelectedCatalogModel] = useState("")
   const [newCategory, setNewCategory] = useState<StockCategory>("sellable")
@@ -1252,15 +1383,38 @@ function ReceiveProductDialog({
   const [companionSerial, setCompanionSerial] = useState("")
   const [equipmentCalDate, setEquipmentCalDate] = useState("")
   const [sendCommissioning, setSendCommissioning] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [duplicateSnPopup, setDuplicateSnPopup] = useState<string | null>(null)
 
   useEffect(() => {
-    const sync = () => setProductCatalog(readProductCatalog())
+    const sync = () => {
+      setProductCatalog(readProductCatalog())
+      setAsDropdown(readDropdownConfig())
+    }
+    const onStorage = (e: StorageEvent) => {
+      if (
+        e.key !== AS_STORE_KEYS.productCatalog &&
+        e.key !== AS_STORE_KEYS.dropdownConfig
+      )
+        return
+      sync()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (
+        key &&
+        key !== AS_STORE_KEYS.productCatalog &&
+        key !== AS_STORE_KEYS.dropdownConfig
+      )
+        return
+      sync()
+    }
     sync()
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
 
@@ -1276,23 +1430,39 @@ function ReceiveProductDialog({
   }, [selectedCatalogModel])
 
   const manufacturersSorted = useMemo(() => {
-    const u = new Set(productCatalog.map((g) => g.manufacturer.trim()).filter(Boolean))
+    const u = new Set<string>()
+    for (const g of productCatalog) {
+      const m = g.manufacturer.trim()
+      if (m) u.add(m)
+    }
+    for (const m of asDropdown.stock_manufacturers) {
+      const t = m.trim()
+      if (t) u.add(t)
+    }
     return [...u].sort((a, b) => a.localeCompare(b, "th"))
-  }, [productCatalog])
+  }, [productCatalog, asDropdown.stock_manufacturers])
 
   const catalogModelsForManufacturer = useMemo(() => {
     if (!selectedManufacturer) return []
     const acc = new Set<string>()
+    let catalogHit = false
     for (const g of productCatalog) {
       if (g.manufacturer === selectedManufacturer) {
+        catalogHit = true
         for (const m of g.models) {
           const t = m.trim()
           if (t) acc.add(t)
         }
       }
     }
+    if (!catalogHit || acc.size === 0) {
+      for (const m of asDropdown.stock_models) {
+        const t = m.trim()
+        if (t) acc.add(t)
+      }
+    }
     return [...acc].sort((a, b) => a.localeCompare(b, "th"))
-  }, [productCatalog, selectedManufacturer])
+  }, [productCatalog, asDropdown.stock_models, selectedManufacturer])
 
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white"
 
@@ -1304,34 +1474,80 @@ function ReceiveProductDialog({
     })
   }
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!supplierPo.trim()) return
-    if (!selectedManufacturer || !selectedCatalogModel) return
+  function submitData() {
+    setSubmitError(null)
+    if (!supplierPo.trim()) {
+      setSubmitError("กรุณากรอก PO / อ้างอิงรับเข้า")
+      return
+    }
+    if (!selectedManufacturer || !selectedCatalogModel) {
+      setSubmitError("กรุณาเลือก Manufacturer และ Product Model")
+      return
+    }
 
     const spec = getReceiveModuleSpec(selectedCatalogModel)
     const mainTrim = newSerial.trim()
     const needsMainSerial = newHasSerial || spec.idaModuleCount > 0 || spec.needsCompanion
-    if (needsMainSerial && !mainTrim) return
+    if (needsMainSerial && !mainTrim) {
+      setSubmitError(spec.idaModuleCount > 0 ? "กรุณากรอก Serial ของเครื่องหลัก (Display)" : "กรุณากรอก Serial ของเครื่องหลัก")
+      return
+    }
 
     if (spec.idaModuleCount > 0) {
       const mods = moduleSerials.map((s) => s.trim())
-      if (mods.length !== spec.idaModuleCount || mods.some((s) => !s)) return
+      if (mods.length !== spec.idaModuleCount || mods.some((s) => !s)) {
+        setSubmitError(`รุ่นนี้ต้องกรอก Serial ของ Module ให้ครบ ${spec.idaModuleCount} ช่อง`)
+        return
+      }
       const allParts = [mainTrim, ...mods]
       if (spec.needsCompanion) allParts.push(companionSerial.trim())
-      if (!serialsUniqueInsensitive(allParts)) return
+      if (!serialsUniqueInsensitive(allParts)) {
+        setSubmitError("Serial ซ้ำกันในชุดเดียวกัน กรุณาตรวจสอบ Serial เครื่องหลัก/Module")
+        return
+      }
     } else if (spec.needsCompanion) {
       const comp = companionSerial.trim()
-      if (!comp) return
-      if (!serialsUniqueInsensitive([mainTrim, comp])) return
+      if (!comp) {
+        setSubmitError(`กรุณากรอก Serial ของ ${spec.companionLabel || "Companion Module"}`)
+        return
+      }
+      if (!serialsUniqueInsensitive([mainTrim, comp])) {
+        setSubmitError("Serial เครื่องหลักซ้ำกับ Companion Serial กรุณาตรวจสอบ")
+        return
+      }
+    }
+
+    const incomingSerials = [mainTrim, ...moduleSerials.map((s) => s.trim()), companionSerial.trim()].filter(Boolean)
+    const liveItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+    const mergedItems = Array.isArray(liveItems) ? liveItems : existingItems
+    const liveJobs = readJobs([])
+    const proactiveAssets = readProactiveCalibrationAssets([])
+    const existingSerials = new Set(
+      [
+        ...mergedItems.flatMap((it) => [it.serial_number || "", ...(it.module_serials || []), it.companion_serial || ""]),
+        ...liveJobs.map((j) => j.serial_number || ""),
+        ...proactiveAssets.map((a) => a.serial_number || ""),
+      ]
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    )
+    const duplicateSN = incomingSerials.find((s) => existingSerials.has(s.toLowerCase()))
+    if (duplicateSN) {
+      setSubmitError(`SN ซ้ำในระบบ: ${duplicateSN} (ระบบไม่อนุญาตรับเข้า SN เดียวกัน)`)
+      setDuplicateSnPopup(duplicateSN)
+      return
     }
 
     const calTrim = equipmentCalDate.trim()
     if (calTrim && parseISODateToUTC(calTrim) > parseISODateToUTC(todayISO)) {
-      window.alert("วันที่ Cal ล่าสุดต้องไม่หลังวันรับเข้า (วันนี้)")
+      setSubmitError("วันที่ Cal ล่าสุดต้องไม่หลังวันรับเข้า (วันนี้)")
       return
     }
-
+    const qtyNormalized = Math.floor(Number(qtyIn))
+    if (!Number.isFinite(qtyNormalized) || qtyNormalized < 1) {
+      setSubmitError("จำนวนรับเข้าต้องมากกว่าหรือเท่ากับ 1")
+      return
+    }
     const id = newId("stk")
 
     const tx: StockTransaction = {
@@ -1339,7 +1555,7 @@ function ReceiveProductDialog({
       item_id: id,
       item_name: selectedCatalogModel,
       type: "in",
-      qty: Math.max(1, Math.floor(Number(qtyIn)) || 1),
+      qty: Math.max(1, qtyNormalized),
       reference: supplierPo.trim(),
       note: sendCommissioning ? [note.trim(), "ส่ง Commissioning Test หลังรับเข้า"].filter(Boolean).join(" · ") : note.trim() || undefined,
       date: todayISO,
@@ -1353,10 +1569,15 @@ function ReceiveProductDialog({
       category: newCategory,
       set_status: sendCommissioning ? "pending_qc" : "in_stock",
       input_product_receive: true,
-      equipment_calibration_date: equipmentCalDate.trim() || undefined,
+      equipment_calibration_date: equipmentCalDate.trim() || todayISO,
     }
     onApply(tx)
     onClose()
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    submitData()
   }
 
   return (
@@ -1372,9 +1593,10 @@ function ReceiveProductDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <form onSubmit={submit} className="p-6 space-y-4">
+        <form noValidate onSubmit={submit} className="p-6 space-y-4">
           <p className="text-xs text-gray-600 leading-relaxed">
-            ยี่ห้อ/รุ่นอ้างอิง <strong>Product Model</strong> ใน Settings · รุ่นที่มี Module ต้องกรอก SN ครบ · กรอก PO รับเข้า ·
+            ยี่ห้อ/รุ่น sync จาก Settings → <strong>Global · Product Catalog</strong> (หลัก) และ AS · Stock Manufacturers/Models
+            (เสริมเมื่อ Catalog ยังไม่มีรุ่นสำหรับยี่ห้อนั้น) · รุ่นที่มี Module ต้องกรอก SN ครบ · กรอก PO รับเข้า ·
             ติ๊ก Commissioning ด้านล่าง (ไม่ต้องกรอกอะไรเพิ่ม) เพื่อส่งเข้าคิว Services · ทุก SN ที่กรอกจะลง{" "}
             <strong>Calibration Proactive</strong> อัตโนมัติ — due = วันที่ Cal ที่กรอก + 1 ปี (ถ้าไม่กรอก Cal ใช้วันรับเข้าแทน)
           </p>
@@ -1504,8 +1726,9 @@ function ReceiveProductDialog({
               className={inp}
             />
             <p className="text-[11px] text-gray-500 mt-1">
-              ไม่บังคับ — ใช้กำหนดรอบถัดไปใน Proactive; ถ้าว่างระบบถือว่าเกณฑ์ Cal = วันรับเข้า
+              ถ้าไม่กรอก ระบบจะใช้วันรับเข้าเป็น Last Calibration และคำนวณ Next Due อัตโนมัติ (+1 year)
             </p>
+            <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">{thDateInputBeHint(equipmentCalDate)}</p>
           </div>
 
           <div>
@@ -1546,12 +1769,39 @@ function ReceiveProductDialog({
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
               ยกเลิก
             </button>
-            <button type="submit" className="flex-1 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-bold hover:bg-emerald-600">
+            <button
+              type="button"
+              onClick={submitData}
+              className="flex-1 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-bold hover:bg-emerald-600"
+            >
               บันทึกรับเข้า
             </button>
           </div>
+          {submitError && <p className="text-xs font-semibold text-red-600">{submitError}</p>}
         </form>
       </div>
+      {duplicateSnPopup && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setDuplicateSnPopup(null)} />
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl p-8 border border-rose-200">
+            <p className="text-center font-black text-rose-600 leading-tight text-[50px]">
+              ไอ่ก้อง SN ซ้ำ
+            </p>
+            <p className="text-center text-sm text-gray-600 mt-3">
+              Serial ที่ซ้ำ: <span className="font-mono font-bold">{duplicateSnPopup}</span>
+            </p>
+            <div className="mt-6 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setDuplicateSnPopup(null)}
+                className="px-6 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-bold hover:bg-rose-700"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1564,13 +1814,27 @@ function SellStockDialog({
 }: {
   item: StockItem
   onClose: () => void
-  onConfirm: (p: { customer_org: string; customer_contact: string; customer_po: string }) => void
+  onConfirm: (p: {
+    customer_org: string
+    customer_contact: string
+    customer_po: string
+    warranty: string
+    pm_per_year: number
+    calibrations_per_year: number
+  }) => void
 }) {
   const [orgs, setOrgs] = useState<ASOrganization[]>([])
   const [orgPick, setOrgPick] = useState("")
   const [freeOrg, setFreeOrg] = useState("")
   const [contact, setContact] = useState("")
   const [customerPo, setCustomerPo] = useState("")
+  const [warranty, setWarranty] = useState("")
+  const [pmPerYear, setPmPerYear] = useState(2)
+  const [calPerYear, setCalPerYear] = useState(1)
+  const today = todayYmdInBangkok()
+  const staleCalDays =
+    item.last_calibration_date ? diffDays(item.last_calibration_date, today) : null
+  const shouldWarnRecalibrationBeforeShip = staleCalDays != null && staleCalDays > 90
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-slate-500 text-sm bg-white"
 
   useEffect(() => {
@@ -1581,7 +1845,14 @@ function SellStockDialog({
     e.preventDefault()
     const org = orgPick === "__other__" ? freeOrg.trim() : orgPick.trim()
     if (!org || !customerPo.trim()) return
-    onConfirm({ customer_org: org, customer_contact: contact.trim(), customer_po: customerPo.trim() })
+    onConfirm({
+      customer_org: org,
+      customer_contact: contact.trim(),
+      customer_po: customerPo.trim(),
+      warranty: warranty.trim(),
+      pm_per_year: Math.max(0, Math.floor(pmPerYear || 0)),
+      calibrations_per_year: Math.max(0, Math.floor(calPerYear || 0)),
+    })
     onClose()
   }
 
@@ -1603,6 +1874,11 @@ function SellStockDialog({
           {item.serial_number && <p className="text-xs font-mono text-slate-600 mt-0.5">SN: {item.serial_number}</p>}
         </div>
         <p className="text-xs text-gray-600 mb-3">บังคับ PO ลูกค้า · เลือกหน่วยงานจากฐานหรือพิมพ์ใหม่ (ลงทะเบียนอัตโนมัติ)</p>
+        {shouldWarnRecalibrationBeforeShip && (
+          <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Last calibration เกิน 3 เดือน ({staleCalDays} วัน) — แนะนำให้สอบเทียบก่อนส่งสินค้า (สามารถข้ามได้)
+          </div>
+        )}
         <form onSubmit={submit} className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">หน่วยงานลูกค้า *</label>
@@ -1630,6 +1906,24 @@ function SellStockDialog({
             <label className="block text-sm font-medium text-gray-700 mb-1">PO ลูกค้า *</label>
             <input required value={customerPo} onChange={(e) => setCustomerPo(e.target.value)} className={inp} placeholder="เลข PO ลูกค้า" />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Warranty *</label>
+            <input required value={warranty} onChange={(e) => setWarranty(e.target.value)} className={inp} placeholder="เช่น 12 เดือน / 365 วัน" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">PM (ครั้ง/ปี) *</label>
+              <input required type="number" min={0} value={pmPerYear} onChange={(e) => setPmPerYear(Number(e.target.value))} className={inp} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สอบเทียบ (ครั้ง/ปี) *</label>
+              <input required type="number" min={0} value={calPerYear} onChange={(e) => setCalPerYear(Number(e.target.value))} className={inp} />
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            หมายเหตุ: PM/ปี เป็นรอบงาน PM เท่านั้น และไม่บังคับจำนวนรอบ Calibration อัตโนมัติ
+            (ระบบสร้างแผน Cal จากค่า "สอบเทียบ (ครั้ง/ปี)" เท่านั้น)
+          </p>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
               ยกเลิก
@@ -1644,10 +1938,60 @@ function SellStockDialog({
   )
 }
 
+function CalibrationUpdateDialog({
+  item,
+  onClose,
+  onConfirm,
+}: {
+  item: StockItem
+  onClose: () => void
+  onConfirm: (lastCalibrationDate: string) => void
+}) {
+  const [lastCalDate, setLastCalDate] = useState(item.last_calibration_date || "")
+  const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm bg-white"
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-lg">Update Calibration</h3>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <p className="text-xs text-gray-600 mb-3">
+          บันทึก Last Calibration Date แล้วระบบจะคำนวณ Next Due อัตโนมัติ (+1 year)
+        </p>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">Last Calibration Date *</label>
+        <input type="date" required value={lastCalDate} onChange={(e) => setLastCalDate(e.target.value)} className={inp} />
+        <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(lastCalDate)}</p>
+        <div className="flex gap-3 pt-4">
+          <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => lastCalDate.trim() && onConfirm(lastCalDate.trim())}
+            className="flex-1 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-bold hover:bg-teal-700"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function StockPage() {
   const itemsVersionRef = useRef(0)
   const jobsVersionRef = useRef(0)
+  const stockHydratedRef = useRef(false)
+  const stockFirstWriteSkippedRef = useRef(false)
+  const transactionsHydratedRef = useRef(false)
+  const transactionsFirstWriteSkippedRef = useRef(false)
+  const bookingsHydratedRef = useRef(false)
+  const bookingsFirstWriteSkippedRef = useRef(false)
 
   const [items, setItems] = useState<StockItem[]>(USE_STOCK_DEV_SEED ? MOCK_ITEMS : [])
   const [transactions, setTransactions] = useState<StockTransaction[]>(
@@ -1666,7 +2010,10 @@ export default function StockPage() {
   const [bookingPrefillItemId, setBookingPrefillItemId] = useState<string | null>(null)
   const [receiveProductDialog, setReceiveProductDialog] = useState(false)
   const [sellStockItem, setSellStockItem] = useState<StockItem | null>(null)
+  const [calibrationUpdateItem, setCalibrationUpdateItem] = useState<StockItem | null>(null)
   const [actionMenuId, setActionMenuId] = useState<string | null>(null)
+  const [showAllNotifications, setShowAllNotifications] = useState(false)
+  const [notificationPopoverOpen, setNotificationPopoverOpen] = useState(false)
   const [dispatchSuccess, setDispatchSuccess] = useState<string|null>(null)
   const [serviceRequestsFromStock, setServiceRequestsFromStock] = useState<ASServiceJob[]>([])
   const [pendingInServiceInbox, setPendingInServiceInbox] = useState(0)
@@ -1768,13 +2115,16 @@ export default function StockPage() {
   useEffect(() => {
     // Hydrate from localStorage only after mount to avoid SSR/client mismatch.
     const savedItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
-    if (savedItems && Array.isArray(savedItems) && savedItems.length > 0) setItems(savedItems)
+    if (savedItems && Array.isArray(savedItems)) setItems(savedItems)
 
     const savedTx = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
-    if (savedTx && Array.isArray(savedTx) && savedTx.length > 0) setTransactions(savedTx)
+    if (savedTx && Array.isArray(savedTx)) setTransactions(savedTx)
+    transactionsHydratedRef.current = true
 
     const savedBookings = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
     if (savedBookings && Array.isArray(savedBookings)) setBookings(savedBookings)
+    bookingsHydratedRef.current = true
+    stockHydratedRef.current = true
   }, [])
 
   useEffect(() => {
@@ -1856,25 +2206,44 @@ export default function StockPage() {
   }, [])
 
   useEffect(() => {
+    if (!stockHydratedRef.current) return
+    // Skip first write after mount; effect closure can still hold pre-hydration seed state.
+    if (!stockFirstWriteSkippedRef.current) {
+      stockFirstWriteSkippedRef.current = true
+      return
+    }
     const { ok, nextVersion } = writeStockItemsWithVersion(items, itemsVersionRef.current)
     if (!ok) {
-      const remote = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
-      if (remote !== null && Array.isArray(remote)) {
-        setItems(remote as StockItem[])
-        itemsVersionRef.current = readStockItemsVersion()
-        setDispatchSuccess("โหลดข้อมูลคลังจากแท็บอื่นแล้ว (เวอร์ชันไม่ตรงกัน — แก้ไขล่าสุดถูกเก็บไว้ที่อื่น)")
-        setTimeout(() => setDispatchSuccess(null), 5000)
+      // Sync version and retry once with latest version to avoid
+      // overwriting local state by stale remote payload.
+      itemsVersionRef.current = nextVersion
+      const retry = writeStockItemsWithVersion(items, itemsVersionRef.current)
+      if (retry.ok) {
+        itemsVersionRef.current = retry.nextVersion
+        return
       }
+      setDispatchSuccess("บันทึกคลังชนกับการแก้ไขจากที่อื่น (version conflict) — ข้อมูลหน้าเดิมยังอยู่ ลองกดบันทึกอีกครั้ง")
+      setTimeout(() => setDispatchSuccess(null), 5000)
       return
     }
     itemsVersionRef.current = nextVersion
   }, [items])
 
   useEffect(() => {
+    if (!transactionsHydratedRef.current) return
+    if (!transactionsFirstWriteSkippedRef.current) {
+      transactionsFirstWriteSkippedRef.current = true
+      return
+    }
     writeStockTransactionsLedger(transactions)
   }, [transactions])
 
   useEffect(() => {
+    if (!bookingsHydratedRef.current) return
+    if (!bookingsFirstWriteSkippedRef.current) {
+      bookingsFirstWriteSkippedRef.current = true
+      return
+    }
     writeStockBookingsLedger(bookings)
   }, [bookings])
 
@@ -1892,6 +2261,10 @@ export default function StockPage() {
   const unreadStockNotifications = useMemo(
     () => stockNotifications.filter((n) => !n.read_at),
     [stockNotifications],
+  )
+  const visibleUnreadNotifications = useMemo(
+    () => (showAllNotifications ? unreadStockNotifications : unreadStockNotifications.slice(0, 5)),
+    [showAllNotifications, unreadStockNotifications],
   )
 
   function approvePartsRequest(req: ASPartsRequest) {
@@ -2023,7 +2396,14 @@ export default function StockPage() {
 
   function confirmSellStock(
     item: StockItem,
-    payload: { customer_org: string; customer_contact: string; customer_po: string },
+    payload: {
+      customer_org: string
+      customer_contact: string
+      customer_po: string
+      warranty: string
+      pm_per_year: number
+      calibrations_per_year: number
+    },
   ) {
     if (item.status === "on_loan" || item.status === "pending_qc") {
       setDispatchSuccess("ตัดขายไม่ได้: เครื่องอยู่กับลูกค้า/Service (On Loan หรือ Pending QC)")
@@ -2043,6 +2423,9 @@ export default function StockPage() {
     const org = payload.customer_org.trim()
     const po = payload.customer_po.trim()
     const contact = payload.customer_contact.trim()
+    const warranty = payload.warranty.trim()
+    const pmPerYear = Math.max(0, Math.floor(payload.pm_per_year || 0))
+    const calPerYear = Math.max(0, Math.floor(payload.calibrations_per_year || 0))
     const nextOrgs = upsertOrganizationByName(readOrganizations([]), org, contact || undefined)
     writeOrganizations(nextOrgs)
 
@@ -2105,12 +2488,44 @@ export default function StockPage() {
               sold_to_org: org,
               sold_contact: contact || undefined,
               sold_customer_po: po,
+              sold_warranty: warranty,
+              sold_pm_per_year: pmPerYear,
+              sold_calibrations_per_year: calPerYear,
+              sold_calibration_plan_start: calPerYear > 0 ? today : undefined,
+              sold_calibration_plan_end: calPerYear > 0 ? addYearsToISODate(today, 1) : undefined,
               sold_at: today,
             }
           : i,
       ),
     )
-    setDispatchSuccess(`ตัดขายแล้ว — ลูกค้า ${org} · PO ${po}`)
+    if (item.serial_number && calPerYear > 0) {
+      const baseDate = today
+      const planEnd = addYearsToISODate(baseDate, 1)
+      const existingAssets = readProactiveCalibrationAssets([])
+      const remaining = existingAssets.filter(
+        (a) => a.serial_number.trim().toLowerCase() !== item.serial_number?.trim().toLowerCase(),
+      )
+      const generated: ASProactiveCalibrationAsset[] = Array.from({ length: calPerYear }).map((_, idx) => {
+        const dueDate = addMonthsToISODate(baseDate, Math.round(((idx + 1) * 12) / calPerYear))
+        const previousDue = idx === 0 ? baseDate : addMonthsToISODate(baseDate, Math.round((idx * 12) / calPerYear))
+        return {
+          id: newId("pc-sold"),
+          customer_org: org,
+          customer_name: contact || undefined,
+          manufacturer: item.brand,
+          model: item.model || item.name,
+          serial_number: item.serial_number || "—",
+          last_calibration_date: previousDue,
+          due_date: dueDate,
+          note: `Auto plan from Sold (${idx + 1}/${calPerYear}) · PO ${po} · Plan ${baseDate} to ${planEnd}`,
+          created_at: new Date().toISOString(),
+        }
+      })
+      writeProactiveCalibrationAssets([...generated, ...remaining])
+    }
+    setDispatchSuccess(
+      `ตัดขายแล้ว — ลูกค้า ${org} · PO ${po} · PM ${pmPerYear}/ปี · Cal ${calPerYear}/ปี (แผน Cal อิงค่า Cal เท่านั้น)`,
+    )
     setTimeout(() => setDispatchSuccess(null), 4000)
   }
 
@@ -2168,6 +2583,9 @@ export default function StockPage() {
             customer_org: tx.customer_org?.trim() || "Stock — รับเข้า / Commissioning",
             customer_contact: tx.customer_contact?.trim() || "—",
             symptom: `Commissioning Test — ตรวจเช็คก่อนเข้า Stock (PO ${tx.reference})`,
+            receive_channel: "พนักงาน",
+            tracking_in: tx.reference || undefined,
+            received_by: "Stock",
             job_type: "commissioning",
             routing: "overseas",
             dispatched_by: "Stock",
@@ -2194,6 +2612,9 @@ export default function StockPage() {
       customer_org: form.customer_org,
       customer_contact: form.customer_name,
       symptom: form.symptom,
+      receive_channel: form.receive_channel,
+      tracking_in: form.receive_channel === "ขนส่งเอกชน" ? form.tracking_in : undefined,
+      received_by: form.receive_channel === "พนักงาน" ? form.received_by : undefined,
       job_type: form.job_type,
       dispatched_by: "Stock",
       dispatched_at: today,
@@ -2212,6 +2633,37 @@ export default function StockPage() {
   /** Service ปิดงานแล้ว — Stock ยืนยันรับเข้าคลังเพื่อสถานะพร้อมจำหน่าย */
   function acceptStockReturn(job: ASServiceJob) {
     const receivedAt = new Date().toISOString()
+    const currentItemsForTrace = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems) ?? []
+    const preMatchedItem = currentItemsForTrace.find((it) => {
+      const byId = Boolean(job.stock_item_id && it.id === job.stock_item_id)
+      const bySn =
+        Boolean(
+          job.serial_number &&
+          job.serial_number !== "—" &&
+          it.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase(),
+        )
+      const byPendingQcHeuristic =
+        Boolean(
+          !job.stock_item_id &&
+          it.status === "pending_qc" &&
+          (
+            (job.serial_number && job.serial_number !== "—" && it.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase()) ||
+            (
+              (!job.serial_number || job.serial_number === "—") &&
+              (it.model || "").trim().toLowerCase() === (job.model || "").trim().toLowerCase() &&
+              (it.brand || "").trim().toLowerCase() === (job.manufacturer || "").trim().toLowerCase()
+            )
+          ),
+        )
+      return byId || bySn || byPendingQcHeuristic
+    })
+    const preMatchStrategy = preMatchedItem
+      ? job.stock_item_id && preMatchedItem.id === job.stock_item_id
+        ? "by_stock_item_id"
+        : job.serial_number && job.serial_number !== "—" && preMatchedItem.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase()
+          ? "by_serial_number"
+          : "by_pending_qc_heuristic"
+      : "fallback_create_new_item"
     const expectedVer = jobsVersionRef.current
     const allJobs = readJobs([])
     const nextJobs = allJobs.map((j) =>
@@ -2226,7 +2678,7 @@ export default function StockPage() {
                 at: receivedAt,
                 from: j.status,
                 to: j.status,
-                reason: "Stock ยืนยันรับเข้าคลัง — พร้อมจำหน่าย",
+                reason: `Stock ยืนยันรับเข้าคลัง — พร้อมจำหน่าย (${preMatchStrategy})`,
               },
             ],
           }
@@ -2241,25 +2693,72 @@ export default function StockPage() {
       return
     }
     jobsVersionRef.current = nextVersion
-    setItems((prev) =>
-      prev.map((i) => {
-        const byId = job.stock_item_id && i.id === job.stock_item_id
-        const sn =
+    // Update stock atomically; if no linked item exists, recreate minimal in-stock item
+    // to avoid "ปิดงานแล้วหาไม่เจอใน Stock" for older/missing linkage jobs.
+    for (let i = 0; i < 3; i += 1) {
+      const currentItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems) ?? []
+      const expectedItemsVer = readStockItemsVersion()
+      let matched = false
+      const nextItems = currentItems.map((it) => {
+        const byId = job.stock_item_id && it.id === job.stock_item_id
+        const bySn =
           job.serial_number &&
           job.serial_number !== "—" &&
-          i.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase()
-        if (byId || sn) {
+          it.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase()
+        const byPendingQcHeuristic =
+          !job.stock_item_id &&
+          it.status === "pending_qc" &&
+          (
+            (job.serial_number && job.serial_number !== "—" && it.serial_number?.trim().toLowerCase() === job.serial_number.trim().toLowerCase()) ||
+            (
+              (!job.serial_number || job.serial_number === "—") &&
+              (it.model || "").trim().toLowerCase() === (job.model || "").trim().toLowerCase() &&
+              (it.brand || "").trim().toLowerCase() === (job.manufacturer || "").trim().toLowerCase()
+            )
+          )
+        if (byId || bySn || byPendingQcHeuristic) {
+          matched = true
+          const calReturnedDate = job.job_type === "calibration" ? today : undefined
           return {
-            ...i,
-            status: "in_stock",
+            ...it,
+            status: "in_stock" as const,
             qc_customer_org: undefined,
             qc_customer_contact: undefined,
-            stocked_at: i.stocked_at || today,
+            stocked_at: it.stocked_at || today,
+            qty: Math.max(1, it.qty || 0),
+            last_calibration_date: calReturnedDate || it.last_calibration_date,
+            calibration_due_date: calReturnedDate ? addYearsToISODate(calReturnedDate, 1) : it.calibration_due_date,
           }
         }
-        return i
-      }),
-    )
+        return it
+      })
+      const withFallback = matched
+        ? nextItems
+        : [
+            {
+              id: job.stock_item_id || newId("stk-ret"),
+              name: job.model || job.serial_number || "Returned equipment",
+              brand: job.manufacturer || "—",
+              model: job.model || undefined,
+              category: "sellable" as const,
+              has_serial: Boolean(job.serial_number && job.serial_number !== "—"),
+              serial_number: job.serial_number && job.serial_number !== "—" ? job.serial_number : undefined,
+              qty: 1,
+              min_qty: 0,
+              unit: "เครื่อง",
+              status: "in_stock" as const,
+              stocked_at: today,
+              last_calibration_date: job.calibration_date || undefined,
+              calibration_due_date: job.due_date || undefined,
+            },
+            ...nextItems,
+          ]
+      const wrItems = writeStockItemsWithVersion(withFallback, expectedItemsVer)
+      if (!wrItems.ok) continue
+      itemsVersionRef.current = wrItems.nextVersion
+      setItems(withFallback)
+      break
+    }
     setPendingStockReturns((p) => p.filter((j) => j.id !== job.id))
     setServiceRequestsFromStock((p) =>
       p
@@ -2274,7 +2773,7 @@ export default function StockPage() {
     if (updatedJob?.stock_return_received_at) {
       setCompletedStockReturns((p) => [updatedJob, ...p.filter((x) => x.id !== job.id)])
     }
-    setDispatchSuccess(`รับเข้าคลังจากงาน ${job.job_no} เรียบร้อย — พร้อมจำหน่าย`)
+    setDispatchSuccess(`รับเข้าคลังจากงาน ${job.job_no} เรียบร้อย — พร้อมจำหน่าย [${preMatchStrategy}]`)
     setTimeout(() => setDispatchSuccess(null), 4000)
   }
 
@@ -2556,6 +3055,12 @@ export default function StockPage() {
       setSellStockItem(item)
       return
     }
+    if (action === "update_calibration") {
+      if (!item.serial_number) return
+      setCalibrationUpdateItem(item)
+      setActionMenuId(null)
+      return
+    }
     if (action === "booking_item") {
       if (!item.has_serial || !item.serial_number) {
         setDispatchSuccess("Booking ต้องใช้สินค้าที่มี SN")
@@ -2631,6 +3136,41 @@ export default function StockPage() {
       setTimeout(() => setDispatchSuccess(null), 2600)
       return
     }
+  }
+
+  function updateCalibrationForItem(item: StockItem, lastCalibrationDate: string) {
+    const due = addYearsToISODate(lastCalibrationDate, 1)
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id
+          ? { ...i, last_calibration_date: lastCalibrationDate, calibration_due_date: due }
+          : i,
+      ),
+    )
+    if (item.serial_number) {
+      const assets = readProactiveCalibrationAssets([])
+      const key = item.serial_number.trim().toLowerCase()
+      const existing = assets.find((a) => a.serial_number.trim().toLowerCase() === key)
+      const nextRecord: ASProactiveCalibrationAsset = {
+        id: existing?.id || newId("pc-upd"),
+        customer_org: existing?.customer_org || item.sold_to_org || PROACTIVE_ORG_STOCK_INBOUND,
+        customer_name: existing?.customer_name || item.sold_contact || undefined,
+        manufacturer: item.brand,
+        model: item.model || item.name,
+        serial_number: item.serial_number,
+        last_calibration_date: lastCalibrationDate,
+        due_date: due,
+        note: "Updated from Stock: Calibration returned from lab",
+        created_at: existing?.created_at || new Date().toISOString(),
+      }
+      const nextAssets = existing
+        ? assets.map((a) => (a.id === existing.id ? nextRecord : a))
+        : [nextRecord, ...assets]
+      writeProactiveCalibrationAssets(nextAssets)
+    }
+    setCalibrationUpdateItem(null)
+    setDispatchSuccess(`Updated calibration for ${item.serial_number || item.name} (Next Due: ${due})`)
+    setTimeout(() => setDispatchSuccess(null), 4000)
   }
 
   const catCounts = (Object.keys(CAT_LABELS) as StockCategory[]).reduce((acc, c) => { acc[c] = items.filter(i => i.category === c).length; return acc }, {} as Record<StockCategory, number>)
@@ -2747,6 +3287,59 @@ export default function StockPage() {
                 <span className="text-sm font-semibold tracking-tight text-slate-900">Item Master</span>
               </span>
             </button>
+            <div className="relative">
+              <button
+                type="button"
+                aria-label="Open notifications"
+                onClick={() => setNotificationPopoverOpen((v) => !v)}
+                className="relative h-full min-h-[58px] px-4 rounded-xl border border-blue-200 bg-white text-blue-700 hover:bg-blue-50"
+              >
+                <Bell className="h-5 w-5" />
+                {unreadStockNotifications.length > 0 && (
+                  <span className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    {unreadStockNotifications.length > 99 ? "99+" : unreadStockNotifications.length}
+                  </span>
+                )}
+              </button>
+              {notificationPopoverOpen && (
+                <div className="absolute right-0 mt-2 w-[340px] max-w-[90vw] rounded-2xl border border-blue-100 bg-white shadow-xl z-30">
+                  <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                    <p className="text-xs font-bold text-gray-800">Service Alerts</p>
+                    {unreadStockNotifications.length > 5 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllNotifications((v) => !v)}
+                        className="text-[11px] font-bold text-blue-700 underline"
+                      >
+                        {showAllNotifications ? "Show less" : "Show all"}
+                      </button>
+                    )}
+                  </div>
+                  {unreadStockNotifications.length === 0 ? (
+                    <p className="px-3 py-4 text-xs text-gray-500">No new notifications</p>
+                  ) : (
+                    <div className="max-h-[320px] overflow-auto p-2 space-y-2">
+                      {visibleUnreadNotifications.map((n) => (
+                        <div key={n.id} className="rounded-xl border border-gray-100 px-3 py-2 bg-gray-50/40">
+                          <p className="text-xs font-semibold text-gray-900">{n.title}</p>
+                          <p className="text-[11px] text-gray-600 mt-0.5">{n.message}</p>
+                          <div className="flex items-center justify-between mt-1.5">
+                            <p className="text-[10px] text-gray-500">{formatThDateTime(n.created_at)}</p>
+                            <button
+                              type="button"
+                              onClick={() => markNotificationAsRead(n.id)}
+                              className="px-2 py-0.5 rounded-lg bg-white border border-gray-200 text-gray-700 text-[10px] font-bold hover:bg-gray-100"
+                            >
+                              Mark read
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -2927,32 +3520,6 @@ export default function StockPage() {
               </div>
             )}
           </div>
-          <div className="glass-panel rounded-2xl p-3 border border-blue-200 bg-blue-50/40">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-sm font-bold text-blue-900">Live Notifications จาก Service</p>
-              <span className="px-2 py-0.5 rounded-lg bg-blue-200 text-blue-900 text-xs font-bold">
-                {unreadStockNotifications.length}
-              </span>
-            </div>
-            {unreadStockNotifications.length === 0 ? (
-              <p className="text-xs text-blue-800">ไม่มีแจ้งเตือนใหม่</p>
-            ) : (
-              <div className="space-y-2 max-h-[220px] overflow-auto pr-1">
-                {unreadStockNotifications.map((n) => (
-                  <div key={n.id} className="bg-white rounded-xl border border-blue-100 px-3 py-2">
-                    <p className="text-sm font-semibold text-gray-900">{n.title}</p>
-                    <p className="text-xs text-gray-600 mt-0.5">{n.message}</p>
-                    <div className="flex items-center justify-between mt-1.5">
-                      <p className="text-[11px] text-gray-500">{formatThDateTime(n.created_at)}</p>
-                      <button type="button" onClick={() => markNotificationAsRead(n.id)} className="px-2 py-0.5 rounded-lg bg-gray-100 text-gray-700 text-[11px] font-bold hover:bg-gray-200">
-                        รับทราบ
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -3100,7 +3667,7 @@ export default function StockPage() {
             <table className="w-full min-w-[1080px] text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  {["Item / SN","Brand","Category","Qty","Min","Days In Stock","Cal ล่าสุด","Status","Quick Action"].map((h) => (
+                  {["Item / SN","Brand","Category","Qty","Min","Days In Stock","Calibration","Status","Quick Action"].map((h) => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">
                       {h}
                     </th>
@@ -3134,14 +3701,15 @@ export default function StockPage() {
                         </span>
                         <span className="text-xs text-gray-400 ml-1">days</span>
                       </td>
-                      <td className="px-4 py-3 text-xs whitespace-nowrap">
-                        {item.last_calibration_date ? (
-                          <span className="font-mono text-teal-800" title={item.last_calibration_date}>
-                            {formatThDateFromYMD(item.last_calibration_date)}
+                      <td className="px-4 py-3 text-[10px] whitespace-nowrap leading-tight">
+                        <div className="space-y-px">
+                          <span className="block font-mono text-teal-800" title={item.last_calibration_date || "—"}>
+                            Cal: {item.last_calibration_date ? formatThDateFromYMD(item.last_calibration_date) : "—"}
                           </span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
+                          <span className="block font-mono text-amber-800" title={item.calibration_due_date || "—"}>
+                            Due: {item.calibration_due_date ? formatThDateFromYMD(item.calibration_due_date) : "—"}
+                          </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <Pill label={STATUS_LABELS[item.status]} color={STATUS_COLORS[item.status]} />
@@ -3181,11 +3749,18 @@ export default function StockPage() {
                               onClick={(e) => e.stopPropagation()}
                               className="absolute right-0 mt-1 w-56 min-w-[14rem] rounded-xl border border-gray-200 bg-white shadow-lg z-20 p-1.5 space-y-1 animate-in fade-in zoom-in-95 duration-150"
                             >
-                              {(item.status === "in_stock" || item.status === "reserved") && (
+                              {(item.status === "in_stock" || item.status === "reserved" || item.status === "sold") && (
                                 <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "send_job") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-blue-700 hover:bg-blue-50">
                                   Send Job
                                 </button>
                               )}
+                              {item.serial_number && (
+                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "update_calibration") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-teal-700 hover:bg-teal-50">
+                                  Update Calibration
+                                </button>
+                              )}
+                              {item.status !== "sold" && (
+                                <>
                               {item.status === "on_loan" ? (
                                 <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "return_loan") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-indigo-700 hover:bg-indigo-50">
                                   Return Loan
@@ -3205,36 +3780,23 @@ export default function StockPage() {
                                   {!isLoanDemoCategory(item) && item.loan_approval_status === "pending" && (
                                     <>
                                       <div className="px-2.5 py-1 text-[10px] font-semibold text-amber-800 bg-amber-50 rounded-lg border border-amber-100">
-                                        รออนุมัติยืม
+                                        Loan Approval Pending
                                       </div>
                                       <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "approve_loan_request") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-800 hover:bg-emerald-50">
-                                        อนุมัติการยืม
+                                        Approve Loan
                                       </button>
                                       <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "reject_loan_request") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-red-600 hover:bg-red-50">
-                                        ปฏิเสธคำขอ
+                                        Reject Request
                                       </button>
                                     </>
                                   )}
                                   {!isLoanDemoCategory(item) && !item.loan_approval_status && (
                                     <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "request_loan_approval") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-amber-900 hover:bg-amber-50">
-                                      ขออนุมัติยืม
+                                      Request Loan Approval
                                     </button>
                                   )}
                                 </>
                               ) : null}
-                              <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "edit_item") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-700 hover:bg-gray-50">
-                                Edit Item
-                              </button>
-                              {item.serial_number && (
-                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "reassign_module") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-700 hover:bg-gray-50">
-                                  Re-assign Module
-                                </button>
-                              )}
-                              {item.serial_number && (
-                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "separate_module") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-gray-700 hover:bg-gray-50">
-                                  Separate Module
-                                </button>
-                              )}
                               {(item.status === "in_stock" || item.status === "reserved") && (
                                 <button
                                   type="button"
@@ -3244,7 +3806,7 @@ export default function StockPage() {
                                   }}
                                   className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-800 hover:bg-slate-100"
                                 >
-                                  Sold (customer PO)
+                                  Mark as Sold
                                 </button>
                               )}
                               {(item.status === "in_stock" || item.status === "reserved") && (
@@ -3256,20 +3818,10 @@ export default function StockPage() {
                                   }}
                                   className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-orange-800 hover:bg-orange-50"
                                 >
-                                  Book this row
+                                  Create Booking
                                 </button>
                               )}
-                              {item.category !== "demo" && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleQuickAction(item, "make_demo")
-                                  }}
-                                  className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-amber-800 hover:bg-amber-50"
-                                >
-                                  ตั้งเป็น Demo Unit
-                                </button>
+                                </>
                               )}
                             </div>
                           )}
@@ -3508,6 +4060,7 @@ export default function StockPage() {
                       <th className="text-left px-3 py-2 font-bold text-gray-500">SN</th>
                       <th className="text-left px-3 py-2 font-bold text-gray-500">ลูกค้า</th>
                       <th className="text-left px-3 py-2 font-bold text-gray-500">PO ลูกค้า</th>
+                      <th className="text-left px-3 py-2 font-bold text-gray-500">Warranty</th>
                       <th className="text-left px-3 py-2 font-bold text-gray-500">จำนวน</th>
                       <th className="text-left px-3 py-2 font-bold text-gray-500">หมายเหตุ</th>
                     </tr>
@@ -3524,6 +4077,7 @@ export default function StockPage() {
                           <td className="px-3 py-2 font-mono text-gray-600">{row.tx.serial_number || "—"}</td>
                           <td className="px-3 py-2 text-gray-600">{row.tx.customer_org || "—"}</td>
                           <td className="px-3 py-2 font-mono text-gray-700">{row.tx.customer_po || "—"}</td>
+                          <td className="px-3 py-2 text-gray-600">—</td>
                           <td className="px-3 py-2 font-mono">{row.tx.qty}</td>
                           <td className="px-3 py-2 text-gray-500">{row.tx.note || "—"}</td>
                         </tr>
@@ -3537,6 +4091,7 @@ export default function StockPage() {
                           <td className="px-3 py-2 font-mono text-gray-600">{row.item.serial_number || "—"}</td>
                           <td className="px-3 py-2 text-gray-600">{row.item.sold_to_org || "—"}</td>
                           <td className="px-3 py-2 font-mono text-gray-700">{row.item.sold_customer_po || "—"}</td>
+                          <td className="px-3 py-2 text-gray-600">{row.item.sold_warranty || "—"}</td>
                           <td className="px-3 py-2 font-mono">{row.item.qty}</td>
                           <td className="px-3 py-2 text-amber-800">ไม่พบแถว STATUS_SOLD — ตรวจสอบธุรกรรม</td>
                         </tr>
@@ -3593,13 +4148,6 @@ export default function StockPage() {
                         className="px-3 py-1.5 rounded-xl bg-blue-500 text-white text-xs font-bold hover:bg-blue-600"
                       >
                         Return loan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleQuickAction(item, "edit_item")}
-                        className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
-                      >
-                        Edit item
                       </button>
                     </div>
                   </div>
@@ -3882,7 +4430,7 @@ export default function StockPage() {
                     </div>
                     <p className="text-xs text-gray-500 mt-2 line-clamp-2">{h.symptom}</p>
                     <p className="text-[11px] text-gray-400 mt-2">
-                      ส่งจาก Stock: {h.dispatched_at} · Service รับ: {formatThDateTime(h.accepted_at)}
+                      ส่งจาก Stock: {formatThDateTime(h.dispatched_at)} · Service รับ: {formatThDateTime(h.accepted_at)}
                     </p>
                   </div>
                 ))}
@@ -4115,6 +4663,7 @@ export default function StockPage() {
       {receiveProductDialog && (
         <ReceiveProductDialog
           todayISO={today}
+          existingItems={items}
           onClose={() => setReceiveProductDialog(false)}
           onApply={addTransaction}
         />
@@ -4124,6 +4673,13 @@ export default function StockPage() {
           item={sellStockItem}
           onClose={() => setSellStockItem(null)}
           onConfirm={(payload) => confirmSellStock(sellStockItem, payload)}
+        />
+      )}
+      {calibrationUpdateItem && (
+        <CalibrationUpdateDialog
+          item={calibrationUpdateItem}
+          onClose={() => setCalibrationUpdateItem(null)}
+          onConfirm={(lastCalDate) => updateCalibrationForItem(calibrationUpdateItem, lastCalDate)}
         />
       )}
       {bookingDialog && (

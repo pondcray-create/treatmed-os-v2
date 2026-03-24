@@ -50,6 +50,7 @@ export interface ASServiceJob {
   received_date: string
   tracking_in: string
   receive_channel: "พนักงาน" | "ขนส่งเอกชน"
+  received_by?: string
   customer_name: string
   customer_org: string
   routing: "in_country" | "overseas"
@@ -77,6 +78,14 @@ export interface ASServiceJob {
   }
   calibration_date?: string
   due_date?: string
+  /** SN ของ Oxygen Sensor หลังเปลี่ยน (งาน VT Calibration) — กรอกเมื่อมีการเปลี่ยน */
+  oxygen_sensor_serial?: string
+  /**
+   * งาน Calibration กลุ่ม VT — เลือกชัดว่าเปลี่ยนหรือไม่เปลี่ยน Oxygen Sensor (FSM ใช้ค่านี้ก่อน; ถ้าไม่มีจะไล่จากข้อความเดิม)
+   */
+  vt_oxygen_sensor_action?: "replaced" | "no_change"
+  /** แถวสต๊อกที่เลือกตัดจ่ายตอนเปลี่ยน O₂ (mock `as_stock_items.id`) */
+  vt_oxygen_stock_item_id?: string
   source?: "manual" | "stock" | "se" | "proactive"
   source_dispatch_id?: string
   /** ลิงก์รายการใน Stock ตอนส่งออกจากคลัง (ใช้ตอนรับกลับ) */
@@ -108,6 +117,9 @@ export interface ASStockDispatch {
   customer_org: string
   customer_contact: string
   symptom: string
+  receive_channel?: "พนักงาน" | "ขนส่งเอกชน"
+  tracking_in?: string
+  received_by?: string
   job_type: ASJobType
   routing?: "in_country" | "overseas"
   // For calibration alerts in Service Monitor
@@ -129,6 +141,9 @@ export interface ASStockDispatchHistoryEntry {
   customer_org: string
   customer_contact: string
   symptom: string
+  receive_channel?: "พนักงาน" | "ขนส่งเอกชน"
+  tracking_in?: string
+  received_by?: string
   job_type: ASJobType
   routing?: "in_country" | "overseas"
   due_date?: string
@@ -253,6 +268,8 @@ export interface ASOxygenSensorHistoryEntry {
   job_id: string
   job_no: string
   serial_number: string
+  /** SN ของ Oxygen Sensor ที่บันทึกตอน Service (ถ้ามี) */
+  oxygen_sensor_serial?: string
   model: string
   job_type: ASJobType
   changed: boolean
@@ -274,6 +291,8 @@ export interface ASProactiveCalibrationAsset {
   last_calibration_date?: string
   due_date: string
   note?: string
+  retired_at?: string
+  retired_reason?: string
   created_at: string
 }
 
@@ -338,6 +357,7 @@ export interface ProductCatalogGroup {
 
 export interface ASWorkflowSettings {
   service_statuses: ASJobStatus[]
+  calibration_statuses: ASJobStatus[]
 }
 
 /** localStorage keys — exported for cross-tab sync / init without write side-effects */
@@ -407,6 +427,8 @@ export const DEFAULT_KPI_SETTINGS: KPISettings = {
     { id: "kpi-calibration-proactive-conversion", module: "calibration", kpi_name: "Proactive Cal Conversion", formula: "เครื่องที่แจ้งเตือนแล้ว cal จริง / ทั้งหมด × 100", target: ">= 60%", reset_cycle: "quarterly" },
     { id: "kpi-stock-inventory-accuracy", module: "stock", kpi_name: "Inventory Accuracy", formula: "รายการที่ตรงจริง / ทั้งหมด × 100", target: ">= 98%", reset_cycle: "monthly" },
     { id: "kpi-stock-avg-receiving-time", module: "stock", kpi_name: "Avg. Receiving Time", formula: "เวลาเฉลี่ยรับเครื่องเข้าระบบ (ชม.)", target: "<= 4 ชม.", reset_cycle: "per_transaction" },
+    { id: "kpi-stock-avg-receiving-time-private-logistics", module: "stock", kpi_name: "Avg. Receiving Time (ขนส่งเอกชน)", formula: "เวลาเฉลี่ยรับเครื่องเข้าระบบเมื่อ receive_channel = ขนส่งเอกชน (ชม.)", target: "<= 4 ชม.", reset_cycle: "per_transaction" },
+    { id: "kpi-stock-avg-receiving-time-staff", module: "stock", kpi_name: "Avg. Receiving Time (พนักงานรับเอง)", formula: "เวลาเฉลี่ยรับเครื่องเข้าระบบเมื่อ receive_channel = พนักงาน (ชม.)", target: "<= 2 ชม.", reset_cycle: "per_transaction" },
   ],
 }
 
@@ -466,6 +488,15 @@ export const DEFAULT_AS_WORKFLOW_SETTINGS: ASWorkflowSettings = {
     "ในคิว",
     "กำลังซ่อม",
     "รออะไหล่",
+    "QC",
+    "รอส่งคืน",
+    "ปิดงาน",
+    "ยกเลิก",
+  ],
+  calibration_statuses: [
+    "รอประเมิน",
+    "กำลังประเมิน",
+    "ในคิว",
     "QC",
     "รอส่งคืน",
     "ปิดงาน",
@@ -588,6 +619,11 @@ export function readOrganizations(fallback: ASOrganization[]) {
 
 export function writeOrganizations(value: ASOrganization[]) {
   writeStore(KEYS.orgs, value)
+}
+
+/** Synthetic org names from Stock / proactive / commissioning (`customer_org`). Keep in store for jobs; hide on ทะเบียนลูกค้า. */
+export function isInternalStockCustomerOrgName(name: string): boolean {
+  return name.trim().startsWith("Stock —")
 }
 
 export function readStockDispatches(fallback: ASStockDispatch[]) {
@@ -875,7 +911,17 @@ export function appendModuleAssignment(value: ASModuleAssignment) {
 }
 
 export function readASWorkflowSettings(fallback: ASWorkflowSettings = DEFAULT_AS_WORKFLOW_SETTINGS) {
-  return readStore<ASWorkflowSettings>(KEYS.asWorkflowSettings, fallback)
+  const value = readStore<Partial<ASWorkflowSettings>>(KEYS.asWorkflowSettings, fallback)
+  const service = Array.isArray(value.service_statuses) && value.service_statuses.length > 0
+    ? value.service_statuses
+    : fallback.service_statuses
+  const calibration = Array.isArray(value.calibration_statuses) && value.calibration_statuses.length > 0
+    ? value.calibration_statuses
+    : service
+  return {
+    service_statuses: service as ASJobStatus[],
+    calibration_statuses: calibration as ASJobStatus[],
+  }
 }
 
 export function writeASWorkflowSettings(value: ASWorkflowSettings) {

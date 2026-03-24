@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { Suspense, useEffect, useMemo, useState } from "react"
 import { AlertTriangle, Plus, Save, Settings2, Trash2 } from "lucide-react"
 import {
   AS_STORE_KEYS,
@@ -41,10 +41,13 @@ function normalizeUnique(values: string[]) {
   return Array.from(new Set(cleaned))
 }
 
-function validateServiceStatuses(statuses: string[]) {
+function validateServiceStatuses(statuses: string[], mode: "service" | "calibration" = "service") {
   const errors: string[] = []
   const warnings: string[] = []
-  const required = ["รอประเมิน", "ในคิว", "กำลังซ่อม", "รออะไหล่", "ปิดงาน", "ยกเลิก"]
+  const required =
+    mode === "calibration"
+      ? ["รอประเมิน", "ในคิว", "ปิดงาน", "ยกเลิก"]
+      : ["รอประเมิน", "ในคิว", "กำลังซ่อม", "รออะไหล่", "ปิดงาน", "ยกเลิก"]
   const canonical = [
     "รอประเมิน",
     "กำลังประเมิน",
@@ -61,13 +64,20 @@ function validateServiceStatuses(statuses: string[]) {
   required.forEach((s) => {
     if (!statuses.includes(s)) errors.push(`ขาดสถานะจำเป็น: ${s}`)
   })
-  const mustBeAfter: Array<[string, string]> = [
-    ["ในคิว", "รอประเมิน"],
-    ["กำลังซ่อม", "ในคิว"],
-    ["รออะไหล่", "กำลังซ่อม"],
-    ["ปิดงาน", "กำลังซ่อม"],
-    ["ยกเลิก", "ปิดงาน"],
-  ]
+  const mustBeAfter: Array<[string, string]> =
+    mode === "calibration"
+      ? [
+          ["ในคิว", "รอประเมิน"],
+          ["ปิดงาน", "ในคิว"],
+          ["ยกเลิก", "ปิดงาน"],
+        ]
+      : [
+          ["ในคิว", "รอประเมิน"],
+          ["กำลังซ่อม", "ในคิว"],
+          ["รออะไหล่", "กำลังซ่อม"],
+          ["ปิดงาน", "กำลังซ่อม"],
+          ["ยกเลิก", "ปิดงาน"],
+        ]
   mustBeAfter.forEach(([after, before]) => {
     const ia = statuses.indexOf(after)
     const ib = statuses.indexOf(before)
@@ -81,7 +91,7 @@ function validateServiceStatuses(statuses: string[]) {
   return { errors, warnings }
 }
 
-export default function SettingsPage() {
+function SettingsPageContent() {
   const { profile } = useAuth()
   const searchParams = useSearchParams()
   const initialTab = (searchParams.get("tab") as SettingsTab) || "global"
@@ -99,6 +109,7 @@ export default function SettingsPage() {
     stock_manufacturers: "",
     calibration_labs: "",
     service_statuses: "",
+    calibration_statuses: "",
     se_customers: "",
     se_owners: "",
     product_code: "",
@@ -113,8 +124,12 @@ export default function SettingsPage() {
   })
   const [savedKey, setSavedKey] = useState<"as" | "se" | "global" | null>(null)
   const serviceStatusChecks = useMemo(
-    () => validateServiceStatuses(asWorkflow.service_statuses),
+    () => validateServiceStatuses(asWorkflow.service_statuses, "service"),
     [asWorkflow.service_statuses],
+  )
+  const calibrationStatusChecks = useMemo(
+    () => validateServiceStatuses(asWorkflow.calibration_statuses, "calibration"),
+    [asWorkflow.calibration_statuses],
   )
 
   useEffect(() => {
@@ -122,10 +137,37 @@ export default function SettingsPage() {
     setTab(qp)
   }, [searchParams])
 
+  useEffect(() => {
+    const sync = () => setProductCatalog(readProductCatalog())
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== AS_STORE_KEYS.productCatalog) return
+      sync()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.productCatalog) return
+      sync()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
+  }, [])
+
   const asSections = useMemo(
     () => [
-      { key: "stock_models" as const, label: "Stock Models", hint: "Model dropdown for Stock In" },
-      { key: "stock_manufacturers" as const, label: "Stock Manufacturers", hint: "Manufacturer dropdown for Stock In" },
+      {
+        key: "stock_models" as const,
+        label: "Stock Models",
+        hint: "รุ่นเสริมเมื่อยังไม่มีใน Global → Product Catalog สำหรับยี่ห้อนั้น (Input Product ใช้ Catalog เป็นหลัก)",
+      },
+      {
+        key: "stock_manufacturers" as const,
+        label: "Stock Manufacturers",
+        hint: "ยี่ห้อเสริมรวมกับรายการ Manufacturer ใน Product Catalog บนหน้ารับเข้า",
+      },
       { key: "calibration_labs" as const, label: "Calibration Labs", hint: "Calibration routing lab options" },
     ],
     [],
@@ -141,14 +183,14 @@ export default function SettingsPage() {
     setDraft((prev) => ({ ...prev, [key]: "" }))
   }
 
-  function addASStatus() {
-    const value = draft.service_statuses.trim()
+  function addASStatus(kind: "service_statuses" | "calibration_statuses") {
+    const value = draft[kind].trim()
     if (!value) return
     setASWorkflow((prev) => ({
       ...prev,
-      service_statuses: normalizeUnique([...prev.service_statuses, value]) as ASWorkflowSettings["service_statuses"],
+      [kind]: normalizeUnique([...prev[kind], value]) as ASWorkflowSettings[typeof kind],
     }))
-    setDraft((prev) => ({ ...prev, service_statuses: "" }))
+    setDraft((prev) => ({ ...prev, [kind]: "" }))
   }
 
   function addSEItem(key: keyof SESettings) {
@@ -168,10 +210,10 @@ export default function SettingsPage() {
     }))
   }
 
-  function removeASStatus(value: string) {
+  function removeASStatus(kind: "service_statuses" | "calibration_statuses", value: string) {
     setASWorkflow((prev) => ({
       ...prev,
-      service_statuses: prev.service_statuses.filter((x) => x !== value),
+      [kind]: prev[kind].filter((x) => x !== value) as ASWorkflowSettings[typeof kind],
     }))
   }
 
@@ -195,11 +237,13 @@ export default function SettingsPage() {
     setGlobalSettings(DEFAULT_GLOBAL_SETTINGS)
     setKPISettings(DEFAULT_KPI_SETTINGS)
     setProductCatalog(DEFAULT_PRODUCT_CATALOG)
+    writeProductCatalog(DEFAULT_PRODUCT_CATALOG)
   }
 
   function saveAS() {
-    if (serviceStatusChecks.errors.length > 0) {
-      window.alert(`ยังบันทึกไม่ได้:\n- ${serviceStatusChecks.errors.join("\n- ")}`)
+    const allErrors = [...serviceStatusChecks.errors, ...calibrationStatusChecks.errors]
+    if (allErrors.length > 0) {
+      window.alert(`ยังบันทึกไม่ได้:\n- ${allErrors.join("\n- ")}`)
       return
     }
     writeDropdownConfig({
@@ -209,6 +253,7 @@ export default function SettingsPage() {
     })
     writeASWorkflowSettings({
       service_statuses: normalizeUnique(asWorkflow.service_statuses) as ASWorkflowSettings["service_statuses"],
+      calibration_statuses: normalizeUnique(asWorkflow.calibration_statuses) as ASWorkflowSettings["calibration_statuses"],
     })
     setSavedKey("as")
     window.setTimeout(() => setSavedKey(null), 2000)
@@ -279,38 +324,50 @@ export default function SettingsPage() {
     const manufacturer = draft.product_manufacturer.trim()
     if (!code || !label || !manufacturer) return
     if (productCatalog.some((g) => g.code === code)) return
-    const next: ProductCatalogGroup = { code, label, manufacturer, models: [] }
-    setProductCatalog((prev) => [...prev, next].sort((a, b) => a.code.localeCompare(b.code)))
+    const nextGroup: ProductCatalogGroup = { code, label, manufacturer, models: [] }
+    setProductCatalog((prev) => {
+      const next = [...prev, nextGroup].sort((a, b) => a.code.localeCompare(b.code))
+      writeProductCatalog(next)
+      return next
+    })
     setSelectedCatalogCode(code)
     setDraft((prev) => ({ ...prev, product_code: "", product_label: "", product_manufacturer: "" }))
   }
 
   function removeProductGroup(code: string) {
-    setProductCatalog((prev) => prev.filter((g) => g.code !== code))
+    setProductCatalog((prev) => {
+      const next = prev.filter((g) => g.code !== code)
+      writeProductCatalog(next)
+      return next
+    })
     if (selectedCatalogCode === code) setSelectedCatalogCode("")
   }
 
   function addProductModelToGroup() {
     const model = draft.product_model.trim()
     if (!model || !selectedCatalogCode) return
-    setProductCatalog((prev) =>
-      prev.map((g) =>
+    setProductCatalog((prev) => {
+      const next = prev.map((g) =>
         g.code === selectedCatalogCode
           ? { ...g, models: normalizeUnique([...g.models, model]) }
           : g,
-      ),
-    )
+      )
+      writeProductCatalog(next)
+      return next
+    })
     setDraft((prev) => ({ ...prev, product_model: "" }))
   }
 
   function removeProductModelFromGroup(code: string, model: string) {
-    setProductCatalog((prev) =>
-      prev.map((g) =>
+    setProductCatalog((prev) => {
+      const next = prev.map((g) =>
         g.code === code
           ? { ...g, models: g.models.filter((m) => m !== model) }
           : g,
-      ),
-    )
+      )
+      writeProductCatalog(next)
+      return next
+    })
   }
 
   const selectedCatalog = productCatalog.find((g) => g.code === selectedCatalogCode)
@@ -734,8 +791,8 @@ export default function SettingsPage() {
           </div>
 
           <div className="mt-4 bg-white rounded-3xl border border-gray-100 p-5">
-            <p className="font-bold text-gray-900">Service Statuses</p>
-            <p className="text-xs text-gray-500 mt-1">Statuses used in AS Service Request workflow and badges.</p>
+            <p className="font-bold text-gray-900">Service Statuses (Repair)</p>
+            <p className="text-xs text-gray-500 mt-1">Statuses used for Repair workflow only.</p>
             <div className="mt-3 flex gap-2">
               <input
                 value={draft.service_statuses}
@@ -743,7 +800,7 @@ export default function SettingsPage() {
                 className={inputClass}
                 placeholder="Add new status"
               />
-              <button type="button" aria-label="เพิ่มสถานะงานบริการ" onClick={addASStatus} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
+              <button type="button" aria-label="เพิ่มสถานะงานบริการ" onClick={() => addASStatus("service_statuses")} className="px-3 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100">
                 <Plus className="h-4 w-4" />
               </button>
             </div>
@@ -751,7 +808,7 @@ export default function SettingsPage() {
               {asWorkflow.service_statuses.map((s) => (
                 <div key={s} className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-2">
                   <span className="text-sm text-gray-700">{s}</span>
-                  <button type="button" aria-label={`ลบสถานะ ${s}`} onClick={() => removeASStatus(s)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
+                  <button type="button" aria-label={`ลบสถานะ ${s}`} onClick={() => removeASStatus("service_statuses", s)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -770,6 +827,44 @@ export default function SettingsPage() {
                 ))}
               </div>
             )}
+            <div className="mt-5 border-t border-gray-100 pt-4">
+              <p className="font-bold text-gray-900">Calibration Statuses (Calibration + PM)</p>
+              <p className="text-xs text-gray-500 mt-1">Statuses used for Calibration และ PM workflow.</p>
+              <div className="mt-3 flex gap-2">
+                <input
+                  value={draft.calibration_statuses}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, calibration_statuses: e.target.value }))}
+                  className={inputClass}
+                  placeholder="Add calibration status"
+                />
+                <button type="button" aria-label="เพิ่มสถานะ Calibration" onClick={() => addASStatus("calibration_statuses")} className="px-3 rounded-xl bg-teal-50 text-teal-700 hover:bg-teal-100">
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {asWorkflow.calibration_statuses.map((s) => (
+                  <div key={`cal-${s}`} className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-2">
+                    <span className="text-sm text-gray-700">{s}</span>
+                    <button type="button" aria-label={`ลบสถานะ Calibration ${s}`} onClick={() => removeASStatus("calibration_statuses", s)} className="p-1.5 rounded-lg text-red-500 hover:bg-red-50">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {(calibrationStatusChecks.errors.length > 0 || calibrationStatusChecks.warnings.length > 0) && (
+                <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-bold text-amber-800 flex items-center gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5" /> Calibration workflow validation
+                  </p>
+                  {calibrationStatusChecks.errors.map((e) => (
+                    <p key={`ce-${e}`} className="text-[11px] text-rose-700 mt-1">- {e}</p>
+                  ))}
+                  {calibrationStatusChecks.warnings.map((w) => (
+                    <p key={`cw-${w}`} className="text-[11px] text-amber-700 mt-1">- {w}</p>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
               <p className="text-xs font-bold text-blue-800">ถ้าจะเปลี่ยนกระบวนการ Services</p>
               <p className="text-[11px] text-blue-700 mt-1">1) จัดลำดับสถานะในส่วนนี้ให้ถูกต้องตาม flow จริง</p>
@@ -780,5 +875,13 @@ export default function SettingsPage() {
         </>
       )}
     </div>
+  )
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-gray-500">Loading settings...</div>}>
+      <SettingsPageContent />
+    </Suspense>
   )
 }

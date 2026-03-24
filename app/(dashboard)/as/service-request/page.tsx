@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { Suspense, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users, ClipboardCheck } from "lucide-react"
+import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users, ClipboardCheck, Package } from "lucide-react"
 import {
   AS_STORE_KEYS,
+  readProactiveCalibrationAssets,
   readASWorkflowSettings,
   appendPartsRequest,
   appendStockNotification,
@@ -26,7 +27,9 @@ import {
   writeJobs,
   writeJobsWithConcurrencyCheck,
   writeOrganizations,
+  writeProactiveCalibrationAssets,
   writeStockDispatches,
+  type ASProactiveCalibrationAsset,
   type ASServiceJob as ServiceJob,
   type ASStockDispatch as StockDispatch,
   type ASRepairToCalRequest as RepairToCalRequest,
@@ -35,8 +38,15 @@ import {
   type ASPartsRequest,
   type ASEquipmentHistoryEntry,
 } from "@/lib/mock/as-store"
-import { STATUS_FLOW, getSlaState, getTransitionBlockReason, getCalibrationAlertLevel } from "@/lib/mock/as-logic"
-import { formatThDateTime } from "@/lib/format-th-datetime"
+import {
+  STATUS_FLOW,
+  getCalibrationAlertLevel,
+  getNextWorkflowStatus,
+  getSlaState,
+  getTransitionBlockReason,
+  getWorkflowProgressIndex,
+} from "@/lib/mock/as-logic"
+import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/format-th-datetime"
 import { newId } from "@/lib/new-id"
 import { useAuth } from "@/hooks/useAuth"
 import {
@@ -49,7 +59,13 @@ import {
   readOfflineJobPatches,
 } from "@/lib/mock/offline-queue"
 import { useJobStateMachine } from "@/hooks/useJobStateMachine"
-import type { JobActorRole, JobFsmState } from "@/lib/as-job-fsm"
+import {
+  applyVTOxygenSensorEffectsOnCalibrationClose,
+  getVTOxygenSensorPickOptions,
+  getVTOxygenSensorStockRollup,
+  type JobActorRole,
+  type JobFsmState,
+} from "@/lib/as-job-fsm"
 
 type JobType = "repair" | "preventive_maintenance" | "calibration" | "commissioning"
 type Priority = "urgent" | "high" | "normal"
@@ -368,7 +384,9 @@ function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolea
       <p className="text-xs text-gray-500 truncate mb-2">{job.customer_org}</p>
       <div className="flex items-center justify-between">
         <Pill label={job.status} color={STATUS_COLORS[job.status]} />
-        <span className="text-xs text-gray-400">{job.received_date}</span>
+        <span className="text-[10px] text-gray-400 leading-tight" title={job.received_date}>
+          {formatThDateFromYMD(job.received_date)}
+        </span>
       </div>
     </button>
   )
@@ -429,10 +447,14 @@ function NewJobDialog({
   onClose,
   onSave,
   orgNames,
+  existingJobs,
+  onOpenExistingJob,
 }: {
   onClose: () => void
   onSave: (j: ServiceJob) => void
   orgNames: string[]
+  existingJobs: ServiceJob[]
+  onOpenExistingJob: (j: ServiceJob) => void
 }) {
   const [form, setForm] = useState({
     job_type: "repair" as JobType,
@@ -451,8 +473,49 @@ function NewJobDialog({
     lab_name: "",
     requires_approval: true,
   })
+  const [serialTouched, setSerialTouched] = useState(false)
+  const normalizedSerial = form.serial_number.trim().toLowerCase()
+  const sameSerialJobs = useMemo(
+    () =>
+      normalizedSerial
+        ? existingJobs.filter((j) => (j.serial_number || "").trim().toLowerCase() === normalizedSerial)
+        : [],
+    [existingJobs, normalizedSerial],
+  )
+  const latestSameSerialJob = sameSerialJobs[0]
+  const openSameSerialJob = sameSerialJobs.find((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
+
+  function applySerialAutofill() {
+    if (!latestSameSerialJob) return
+    setForm((f) => ({
+      ...f,
+      manufacturer: latestSameSerialJob.manufacturer || f.manufacturer,
+      model: latestSameSerialJob.model || f.model,
+      customer_org: latestSameSerialJob.customer_org || f.customer_org,
+      customer_name: latestSameSerialJob.customer_name || f.customer_name,
+      routing: latestSameSerialJob.routing || f.routing,
+      symptom_reported: f.symptom_reported || latestSameSerialJob.symptom_reported || "",
+    }))
+  }
+
   function submit(e: React.FormEvent) {
     e.preventDefault()
+    const serial = form.serial_number.trim()
+    const sameSn = existingJobs.filter((j) => (j.serial_number || "").trim().toLowerCase() === serial.toLowerCase())
+    const duplicatedOpen = sameSn.find((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
+    if (duplicatedOpen) {
+      window.alert(`SN นี้มีงานเปิดอยู่แล้ว (${duplicatedOpen.job_no} · ${duplicatedOpen.status})\nกรุณาเปิดงานเดิมเพื่ออัปเดตต่อ`)
+      return
+    }
+    const sameDayDuplicate = sameSn.find((j) => (j.received_date || "").trim() === form.received_date.trim())
+    if (sameDayDuplicate) {
+      const confirmed = window.confirm(`พบ SN เดียวกันในวันรับเข้าเดียวกัน (${sameDayDuplicate.job_no})\nยืนยันสร้างงานใหม่ต่อหรือไม่?`)
+      if (!confirmed) return
+    }
+    if ((form.job_type === "repair" || form.job_type === "calibration") && form.receive_channel === "ขนส่งเอกชน" && !form.tracking_in.trim()) {
+      window.alert("งาน Repair/Calibration ที่รับจากขนส่งเอกชนต้องระบุ Tracking No.")
+      return
+    }
     const count = Math.floor(Math.random() * 900) + 100
     onSave({ id: Date.now().toString(), job_no: `JOB-2024-0${count}`, status: "รอประเมิน", created_at: new Date().toISOString().split("T")[0], ...form, rma_code: form.routing === "overseas" ? form.rma_code : undefined, lab_name: form.job_type === "calibration" && form.routing === "in_country" ? form.lab_name : undefined })
     onClose()
@@ -519,11 +582,22 @@ function NewJobDialog({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="job-serial" className={lbl}>Serial Number *</label>
-                <input id="job-serial" required value={form.serial_number} onChange={e=>setForm(f=>({...f,serial_number:e.target.value}))} className={inp} placeholder="SN ของเครื่อง" />
+                <input
+                  id="job-serial"
+                  required
+                  value={form.serial_number}
+                  onChange={e=> {
+                    setSerialTouched(true)
+                    setForm(f=>({...f,serial_number:e.target.value}))
+                  }}
+                  className={inp}
+                  placeholder="SN ของเครื่อง"
+                />
               </div>
               <div>
                 <label htmlFor="job-received-date" className={lbl}>วันที่รับเครื่อง</label>
                 <input id="job-received-date" type="date" value={form.received_date} onChange={e=>setForm(f=>({...f,received_date:e.target.value}))} className={inp} />
+                <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(form.received_date)}</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -541,6 +615,46 @@ function NewJobDialog({
                 </div>
               </div>
             </div>
+            {serialTouched && normalizedSerial && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-3">
+                {sameSerialJobs.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-blue-800">
+                      พบประวัติ SN นี้ {sameSerialJobs.length} งาน
+                      {openSameSerialJob ? ` · มีงานเปิดอยู่ (${openSameSerialJob.job_no})` : ""}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={applySerialAutofill}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-blue-200 text-blue-700 hover:bg-blue-100"
+                      >
+                        เติมข้อมูลจากงานล่าสุด
+                      </button>
+                      {openSameSerialJob && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onOpenExistingJob(openSameSerialJob)
+                            onClose()
+                          }}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100"
+                        >
+                          เปิดงานเดิม
+                        </button>
+                      )}
+                      {latestSameSerialJob && (
+                        <span className="text-[11px] text-blue-700">
+                          ล่าสุด: {latestSameSerialJob.job_no} · {latestSameSerialJob.customer_org}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-blue-700">SN นี้ยังไม่พบในระบบ (จะสร้างเป็นรายการใหม่)</p>
+                )}
+              </div>
+            )}
           </div>
           {/* Routing */}
           <div className="p-4 rounded-2xl bg-gray-50 space-y-3">
@@ -781,6 +895,21 @@ function FromStockTab({
               <p className="text-xs text-gray-400 mb-0.5 flex items-center gap-1"><User className="h-3 w-3" /> ผู้ติดต่อ</p>
               <p className="text-sm font-semibold text-gray-900">{d.customer_contact || "—"}</p>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100">
+              ช่องทางรับ: {d.receive_channel ?? "พนักงาน"}
+            </span>
+            {d.receive_channel === "ขนส่งเอกชน" && (
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                Tracking: {d.tracking_in?.trim() || "—"}
+              </span>
+            )}
+            {d.receive_channel === "พนักงาน" && (
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                ผู้รับ: {d.received_by?.trim() || "—"}
+              </span>
+            )}
           </div>
           <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 mb-4">
             <p className="text-xs text-orange-600 mb-1">อาการ / เหตุผล</p>
@@ -1059,7 +1188,7 @@ function FromRepairCalTab({
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
-export default function ServiceRequestPage() {
+function ServiceRequestPageContent() {
   const { profile } = useAuth()
   const actorRole: JobActorRole =
     profile?.role === "admin"
@@ -1086,7 +1215,7 @@ export default function ServiceRequestPage() {
   const [repairToCalRequests, setRepairToCalRequests] = useState<RepairToCalRequest[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [orgNames, setOrgNames] = useState<string[]>(MOCK_ORGS)
-  const [statusFlow, setStatusFlow] = useState<ServiceJob["status"][]>(STATUS_FLOW)
+  const [workflowSettings, setWorkflowSettings] = useState(readASWorkflowSettings())
   const [cancelDialogJob, setCancelDialogJob] = useState<ServiceJob | null>(null)
   const [cancelReason, setCancelReason] = useState("")
   const [cancelActionPlan, setCancelActionPlan] = useState("")
@@ -1102,6 +1231,7 @@ export default function ServiceRequestPage() {
   const [offlineConflictCount, setOfflineConflictCount] = useState(0)
   const [offlineQueueItems, setOfflineQueueItems] = useState<OfflineMutation[]>([])
   const [transitionError, setTransitionError] = useState<string>("")
+  const [vtOxygenStock, setVtOxygenStock] = useState(() => getVTOxygenSensorStockRollup())
 
   useEffect(() => {
     const loadedJobs = readJobs(MOCK_JOBS)
@@ -1128,7 +1258,8 @@ export default function ServiceRequestPage() {
     }))
     const loadedOrgs = readOrganizations(fallbackOrgs)
     setOrgNames(loadedOrgs.map((o) => o.name))
-    setStatusFlow(readASWorkflowSettings().service_statuses)
+    setWorkflowSettings(readASWorkflowSettings())
+    setVtOxygenStock(getVTOxygenSensorStockRollup())
   }, [])
 
   useEffect(() => {
@@ -1149,13 +1280,16 @@ export default function ServiceRequestPage() {
       setRepairToCalRequests(readRepairToCalRequests([]))
       setPartsRequests(readPartsRequests([]))
       setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
-      setStatusFlow(readASWorkflowSettings().service_statuses)
+      setWorkflowSettings(readASWorkflowSettings())
       setEquipmentHistory(readEquipmentHistory([]))
+      setVtOxygenStock(getVTOxygenSensorStockRollup())
     }
     const allowedKeys = new Set<string>([
       AS_STORE_KEYS.jobs,
       AS_STORE_KEYS.jobsVersion,
       AS_STORE_KEYS.stockDispatches,
+      AS_STORE_KEYS.stockItems,
+      AS_STORE_KEYS.stockItemsVersion,
       AS_STORE_KEYS.repairToCalRequests,
       AS_STORE_KEYS.partsRequests,
       AS_STORE_KEYS.seIncomingRequests,
@@ -1205,6 +1339,43 @@ export default function ServiceRequestPage() {
   useEffect(() => {
     if (profile?.role === "as_service" || profile?.role === "as_staff") setMyQueueOnly(true)
   }, [profile?.role])
+
+  function getStatusFlowByJobType(jobType: JobType): ServiceJob["status"][] {
+    if (jobType === "commissioning") return ["ในคิว", "กำลังประเมิน", "ปิดงาน"]
+    if (jobType === "calibration" || jobType === "preventive_maintenance") {
+      const flow = workflowSettings.calibration_statuses || []
+      return flow.length > 0 ? flow : workflowSettings.service_statuses
+    }
+    return workflowSettings.service_statuses.length > 0 ? workflowSettings.service_statuses : STATUS_FLOW
+  }
+
+  function upsertProactiveFromCalibration(job: ServiceJob) {
+    if (!job.serial_number?.trim()) return
+    const assets = readProactiveCalibrationAssets([])
+    const key = job.serial_number.trim().toLowerCase()
+    const existing = assets.find((a) => a.serial_number.trim().toLowerCase() === key)
+    // If customer retired/disposed this SN, stop proactive chain.
+    if (existing?.retired_at) return
+    const calDate = (job.calibration_date || "").trim()
+    if (!calDate) return
+    const dueDate = addOneYear(calDate)
+    const nextRecord: ASProactiveCalibrationAsset = {
+      id: existing?.id || newId("pc-job"),
+      customer_org: existing?.customer_org || job.customer_org || "Unknown",
+      customer_name: existing?.customer_name || job.customer_name || undefined,
+      manufacturer: job.manufacturer || existing?.manufacturer || "—",
+      model: job.model || existing?.model || "—",
+      serial_number: job.serial_number,
+      last_calibration_date: calDate,
+      due_date: dueDate,
+      note: `Auto-updated from Calibration close (${job.job_no})`,
+      created_at: existing?.created_at || new Date().toISOString(),
+      retired_at: existing?.retired_at,
+      retired_reason: existing?.retired_reason,
+    }
+    const next = existing ? assets.map((a) => (a.id === existing.id ? nextRecord : a)) : [nextRecord, ...assets]
+    writeProactiveCalibrationAssets(next)
+  }
 
   function applyOfflineQueueNow() {
     const q = readOfflineJobPatches()
@@ -1527,6 +1698,10 @@ export default function ServiceRequestPage() {
     }
   }
 
+  function workflowCanonicalOrder(): ServiceJob["status"][] {
+    return workflowSettings.service_statuses.length > 0 ? workflowSettings.service_statuses : STATUS_FLOW
+  }
+
   function canAdvance(job: ServiceJob) {
     if (isCommissioningTestJob(job)) {
       return (
@@ -1537,8 +1712,22 @@ export default function ServiceRequestPage() {
         job.status === "รอส่งคืน"
       ) && job.status !== "ปิดงาน"
     }
-    const availableStatuses = fsm.getAvailableNextStatuses(job)
-    return availableStatuses.length > 0
+    const flow = getStatusFlowByJobType(job.job_type).filter((s) => s !== "ยกเลิก") as ServiceJob["status"][]
+    const next = getNextWorkflowStatus(job.status, flow, workflowCanonicalOrder())
+    if (!next) return false
+    return getTransitionBlockReason(job) == null
+  }
+
+  function advanceBlockedHint(job: ServiceJob): string | null {
+    if (isCommissioningTestJob(job)) return null
+    const flow = getStatusFlowByJobType(job.job_type).filter((s) => s !== "ยกเลิก") as ServiceJob["status"][]
+    const next = getNextWorkflowStatus(job.status, flow, workflowCanonicalOrder())
+    const gate = getTransitionBlockReason(job)
+    if (gate) return gate
+    if (!next) {
+      return "อยู่ขั้นสุดท้ายของ workflow แล้ว หรือสถานะไม่อยู่ใน flow ประเภทงานนี้ (ตรวจ Settings → Calibration / Service statuses)"
+    }
+    return null
   }
 
   function advanceStatus(job: ServiceJob) {
@@ -1589,41 +1778,70 @@ export default function ServiceRequestPage() {
       setTransitionError("บันทึกสถานะไม่สำเร็จ กรุณาลองใหม่")
       return
     }
-    const availableStatuses = fsm.getAvailableNextStatuses(job)
-    const flow = statusFlow.filter((s) => s !== "ยกเลิก") as ServiceJob["status"][]
-    const currentIdx = flow.indexOf(job.status)
-    let nextStatus: ServiceJob["status"] | undefined
-    if (currentIdx >= 0) {
-      for (let i = currentIdx + 1; i < flow.length; i += 1) {
-        if (availableStatuses.includes(flow[i])) {
-          nextStatus = flow[i]
-          break
-        }
-      }
-    }
-    if (!nextStatus) {
-      nextStatus = availableStatuses[0]
-    }
-    if (!nextStatus) return
-    const res = fsm.transitionToStatus(job.id, nextStatus)
-    if (!res.ok) {
-      const reason = res.reason || "FSM transition failed"
-      setTransitionError(reason)
-      console.warn(reason)
+    const gate = getTransitionBlockReason(job)
+    if (gate) {
+      setTransitionError(gate)
       return
     }
-    const live = readJobs([])
-    const updated = live.find((j) => j.id === job.id)
-    if (updated) {
-      if (updated.status === "ปิดงาน" && updated.source === "stock") {
-        updated.stock_return_pending = true
+    const flow = getStatusFlowByJobType(job.job_type).filter((s) => s !== "ยกเลิก") as ServiceJob["status"][]
+    const nextStatus = getNextWorkflowStatus(job.status, flow, workflowCanonicalOrder())
+    if (!nextStatus) return
+    if (
+      (job.job_type === "calibration" || job.job_type === "preventive_maintenance") &&
+      nextStatus === "ปิดงาน" &&
+      !job.calibration_date?.trim()
+    ) {
+      setTransitionError("งาน Calibration/PM ก่อนปิดงานต้องกรอก Calibration Date เพื่อเชื่อม Proactive")
+      return
+    }
+
+    const updated: ServiceJob = {
+      ...job,
+      due_date:
+        (job.job_type === "calibration" || job.job_type === "preventive_maintenance") && nextStatus === "ปิดงาน" && job.calibration_date
+          ? addOneYear(job.calibration_date)
+          : job.due_date,
+      status: nextStatus,
+      // Keep FSM state for compatibility, but status order comes from Settings.
+      fsm_state:
+        nextStatus === "ปิดงาน"
+          ? "COMPLETED"
+          : nextStatus === "ยกเลิก"
+            ? "ESCALATED"
+            : "IN_PROGRESS",
+      stock_return_pending: nextStatus === "ปิดงาน" && job.source === "stock" ? true : job.stock_return_pending,
+      status_logs: [
+        ...(job.status_logs || []),
+        {
+          at: new Date().toISOString(),
+          from: job.status,
+          to: nextStatus,
+          reason: `Workflow Settings flow: ${job.status} -> ${nextStatus}`,
+        },
+      ],
+    }
+
+    for (let i = 0; i < 3; i += 1) {
+      const baseJobs = readJobs([])
+      const expectedVer = readJobsVersion()
+      const nextJobs = baseJobs.map((j) => (j.id === job.id ? updated : j))
+      const wr = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
+      if (!wr.ok) continue
+      if ((updated.job_type === "calibration" || updated.job_type === "preventive_maintenance") && updated.status === "ปิดงาน") {
+        upsertProactiveFromCalibration(updated)
       }
+      if (nextStatus === "ปิดงาน") {
+        applyVTOxygenSensorEffectsOnCalibrationClose(updated)
+      }
+      setJobs(nextJobs)
       setSelected(updated)
+      notifyStockJobStatus(job, nextStatus, `อัปเดตสถานะตาม Settings flow`)
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        enqueueOfflineJobPatchWithBaseStatus(job.id, { status: nextStatus }, job.status)
+      }
+      return
     }
-    setJobs(live)
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      enqueueOfflineJobPatchWithBaseStatus(job.id, { status: nextStatus }, job.status)
-    }
+    setTransitionError("บันทึกสถานะไม่สำเร็จ กรุณาลองใหม่")
   }
 
   // Accept dispatched job from Stock → create a new ServiceJob
@@ -1643,8 +1861,9 @@ export default function ServiceRequestPage() {
       manufacturer: d.manufacturer || "—",
       model: d.model || d.item_name,
       received_date: today,
-      tracking_in: "—",
-      receive_channel: "พนักงาน",
+      tracking_in: d.tracking_in?.trim() || "—",
+      receive_channel: d.receive_channel ?? "พนักงาน",
+      received_by: d.received_by?.trim() || undefined,
       customer_name: d.customer_contact,
       customer_org: d.customer_org,
       routing: (d.routing || "in_country") as Routing,
@@ -1695,6 +1914,9 @@ export default function ServiceRequestPage() {
         customer_org: d.customer_org,
         customer_contact: d.customer_contact,
         symptom: d.symptom,
+        receive_channel: d.receive_channel,
+        tracking_in: d.tracking_in,
+        received_by: d.received_by,
         job_type: d.job_type,
         routing: d.routing,
         due_date: d.due_date,
@@ -1863,25 +2085,32 @@ export default function ServiceRequestPage() {
     "CLOSED",
     "ESCALATED",
   ]
-  const COMMISSIONING_PROGRESS_FLOW: ServiceJob["status"][] = ["ในคิว", "กำลังประเมิน", "ปิดงาน"]
-  const LEGACY_PROGRESS_FLOW: ServiceJob["status"][] = statusFlow.filter((s) => s !== "ยกเลิก")
+  const LEGACY_PROGRESS_FLOW: ServiceJob["status"][] = (sel ? getStatusFlowByJobType(sel.job_type) : workflowSettings.service_statuses).filter((s) => s !== "ยกเลิก")
   const currentFsmState: JobFsmState = sel?.fsm_state || "ISSUED"
+  const oxygenChoicesLocked =
+    !!sel &&
+    (sel.status === "ปิดงาน" ||
+      sel.status === "ยกเลิก" ||
+      currentFsmState === "COMPLETED" ||
+      currentFsmState === "CLOSED")
   const progressFlow = sel
-    ? (isCommissioningTestJob(sel) ? COMMISSIONING_PROGRESS_FLOW : LEGACY_PROGRESS_FLOW.length > 0 ? LEGACY_PROGRESS_FLOW : STATUS_FLOW)
+    ? (LEGACY_PROGRESS_FLOW.length > 0 ? LEGACY_PROGRESS_FLOW : STATUS_FLOW)
     : LEGACY_PROGRESS_FLOW.length > 0
       ? LEGACY_PROGRESS_FLOW
       : STATUS_FLOW
+  const selectedJobFlow = sel ? getStatusFlowByJobType(sel.job_type) : workflowSettings.service_statuses
+
+  const statusFilterOptions = useMemo(() => {
+    if (filterType !== "all") return getStatusFlowByJobType(filterType)
+    const merged = jobs.flatMap((j) => getStatusFlowByJobType(j.job_type))
+    return Array.from(new Set(merged))
+  }, [filterType, jobs, workflowSettings])
   const currentProgressIdx =
     sel == null
       ? 0
-      : Math.max(
-          0,
-          progressFlow.indexOf(sel.status) >= 0
-            ? progressFlow.indexOf(sel.status)
-            : sel.status === "ยกเลิก"
-              ? 0
-              : progressFlow.length - 1,
-        )
+      : Math.max(0, getWorkflowProgressIndex(sel.status, progressFlow, workflowCanonicalOrder()))
+  const oxygenPickOptions = useMemo(() => getVTOxygenSensorPickOptions(), [vtOxygenStock])
+
   const proactiveId = searchParams.get("proactive_id")
   const deepLinkJobId = searchParams.get("job_id")
   const deepLinkJobNo = searchParams.get("job_no")
@@ -2098,7 +2327,7 @@ export default function ServiceRequestPage() {
             </div>
             <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option>ทั้งหมด</option>
-              {statusFlow.map(s=><option key={s}>{s}</option>)}
+              {statusFilterOptions.map(s=><option key={s}>{s}</option>)}
             </select>
             <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
               {filtered.length === 0
@@ -2164,9 +2393,12 @@ export default function ServiceRequestPage() {
                       >
                         เปลี่ยนสถานะ <ChevronRight className="h-4 w-4" />
                       </button>
-                      {!canAdvance(sel) && !isCommissioningTestJob(sel) && (
-                        <p className="text-xs text-red-500 text-right">{getTransitionBlockReason(sel)}</p>
-                      )}
+                      {!canAdvance(sel) &&
+                        !isCommissioningTestJob(sel) &&
+                        (() => {
+                          const h = advanceBlockedHint(sel)
+                          return h ? <p className="text-xs text-red-500 text-right">{h}</p> : null
+                        })()}
                       {transitionError && (
                         <p className="text-xs text-red-500 text-right max-w-[280px]">{transitionError}</p>
                       )}
@@ -2229,8 +2461,11 @@ export default function ServiceRequestPage() {
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-white p-3 rounded-2xl">
-                    <p className="text-xs text-gray-400 mb-0.5">วันที่รับ</p>
-                    <p className="text-sm font-bold">{sel.received_date}</p>
+                    <p className="text-[11px] text-gray-400 mb-0.5">วันที่รับ</p>
+                    <p className="text-xs font-semibold text-gray-900 leading-tight">{formatThDateFromYMD(sel.received_date)}</p>
+                    <p className="text-[9px] text-gray-400 font-mono leading-none mt-px" title="เก็บในระบบเป็น ค.ศ.">
+                      {sel.received_date}
+                    </p>
                   </div>
                   <div className="bg-white p-3 rounded-2xl">
                     <p className="text-xs text-gray-400 mb-0.5">ช่องทาง</p>
@@ -2287,36 +2522,183 @@ export default function ServiceRequestPage() {
                 {isVTOxygenCalibration && (
                   <div className="p-3 rounded-2xl border border-indigo-200 bg-indigo-50 space-y-2">
                     <p className="text-xs font-semibold text-indigo-700">
-                      Calibration กลุ่ม VT: ระบุให้ชัดว่า "เปลี่ยน Oxygen Sensor" หรือ "ไม่เปลี่ยน Oxygen Sensor"
+                      Calibration กลุ่ม VT: เลือกสถานะ Oxygen Sensor (ใช้ปิดงาน + Oxygen History)
                     </p>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const oxygenNote = "เปลี่ยน Oxygen Sensor แล้ว (VT Calibration)"
-                          updateSelected({
-                            symptom_actual: [sel.symptom_actual?.trim(), oxygenNote].filter(Boolean).join(" | "),
-                            fix_method: [sel.fix_method?.trim(), oxygenNote].filter(Boolean).join(" | "),
-                          })
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700"
+                    <div className="rounded-xl border border-indigo-100 bg-white/90 px-3 py-2 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-indigo-900 flex items-center gap-1.5 min-w-0">
+                          <Package className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                          <span className="truncate">สต๊อก Oxygen Sensor (VT) — sync กับหน้า Stock</span>
+                        </span>
+                        <Link
+                          href="/as/stock"
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 shrink-0"
+                        >
+                          ไป Stock
+                        </Link>
+                      </div>
+                      <p
+                        className={`text-sm font-black tabular-nums ${
+                          vtOxygenStock.hasAvailable ? "text-emerald-700" : "text-amber-700"
+                        }`}
                       >
-                        เติมข้อความเปลี่ยน Oxygen Sensor
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const oxygenNote = "ไม่เปลี่ยน Oxygen Sensor: ค่าการวัดอยู่ในเกณฑ์ปกติ (no change)"
-                          updateSelected({
-                            symptom_actual: [sel.symptom_actual?.trim(), oxygenNote].filter(Boolean).join(" | "),
-                            fix_method: [sel.fix_method?.trim(), oxygenNote].filter(Boolean).join(" | "),
-                          })
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-white border border-indigo-200 text-indigo-700 text-xs font-bold hover:bg-indigo-100"
-                      >
-                        เติมข้อความไม่เปลี่ยน Oxygen Sensor
-                      </button>
+                        คงเหลือรวม {vtOxygenStock.totalQty} ชิ้น
+                      </p>
+                      {vtOxygenStock.lines.length > 0 ? (
+                        <ul className="text-[10px] text-gray-600 space-y-0.5 max-h-20 overflow-y-auto pr-0.5">
+                          {vtOxygenStock.lines.map((l) => (
+                            <li key={l.id} className="flex justify-between gap-2">
+                              <span className="truncate min-w-0" title={`${l.name} ${l.model || ""}`}>
+                                {l.name}
+                                {l.model ? ` · ${l.model}` : ""}
+                              </span>
+                              <span
+                                className={`font-mono shrink-0 tabular-nums ${l.qty <= 0 ? "text-rose-600" : "text-gray-800"}`}
+                              >
+                                {l.qty}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-[10px] text-gray-500 leading-snug">
+                          ยังไม่มีรายการในสต๊อกที่ตรงกฎ (ชื่อ/model ต้องมี oxygen + sensor และ vt / vt650 / vt900)
+                        </p>
+                      )}
+                      {sel.vt_oxygen_sensor_action === "replaced" && !vtOxygenStock.hasAvailable && !oxygenChoicesLocked && (
+                        <p className="text-[10px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                          ยังปิดงานไม่ได้: เลือก &quot;เปลี่ยน&quot; ต้องมีสต๊อกอย่างน้อย 1 ชิ้น (ระบบจะตัดอัตโนมัติตอน COMPLETED)
+                        </p>
+                      )}
                     </div>
+                    {oxygenChoicesLocked ? (
+                      <div className="rounded-xl border border-indigo-100 bg-white/80 px-3 py-2 space-y-1.5 text-xs text-gray-800">
+                        <p className="font-semibold text-indigo-900">บันทึก Oxygen (ล็อกแล้ว — งานปิด/จบแล้ว)</p>
+                        <p>
+                          <span className="text-gray-500">สถานะ:</span>{" "}
+                          {sel.vt_oxygen_sensor_action === "replaced"
+                            ? "เปลี่ยน"
+                            : sel.vt_oxygen_sensor_action === "no_change"
+                              ? "ไม่เปลี่ยน"
+                              : "— (อิงข้อความเดิม)"}
+                        </p>
+                        {sel.vt_oxygen_sensor_action === "replaced" && (
+                          <>
+                            {sel.vt_oxygen_stock_item_id && (
+                              <p className="text-[10px] text-gray-600 leading-snug">
+                                สต๊อก:{" "}
+                                {oxygenPickOptions.find((o) => o.stockItemId === sel.vt_oxygen_stock_item_id)?.label ??
+                                  sel.vt_oxygen_stock_item_id}
+                              </p>
+                            )}
+                            {(sel.oxygen_sensor_serial || "").trim() !== "" && (
+                              <p className="font-mono text-[11px]">SN: {sel.oxygen_sensor_serial}</p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={!vtOxygenStock.hasAvailable}
+                            onClick={() =>
+                              updateSelected({
+                                vt_oxygen_sensor_action: "replaced",
+                                vt_oxygen_stock_item_id: undefined,
+                                oxygen_sensor_serial: "",
+                              })
+                            }
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                              sel.vt_oxygen_sensor_action === "replaced"
+                                ? "bg-indigo-600 border-indigo-600 text-white"
+                                : "bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-100"
+                            }`}
+                          >
+                            เปลี่ยน Oxygen Sensor
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateSelected({
+                                vt_oxygen_sensor_action: "no_change",
+                                oxygen_sensor_serial: "",
+                                vt_oxygen_stock_item_id: undefined,
+                              })
+                            }
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-colors ${
+                              sel.vt_oxygen_sensor_action === "no_change"
+                                ? "bg-slate-700 border-slate-700 text-white"
+                                : "bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-100"
+                            }`}
+                          >
+                            ไม่เปลี่ยน Oxygen Sensor
+                          </button>
+                        </div>
+                        {sel.vt_oxygen_sensor_action === "replaced" && (
+                          <div className="space-y-2">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-indigo-800 mb-1">
+                                เลือกรายการจากสต๊อกที่จะตัดจ่าย *
+                              </label>
+                              <select
+                                value={sel.vt_oxygen_stock_item_id ?? ""}
+                                onChange={(e) => {
+                                  const id = e.target.value
+                                  const opt = oxygenPickOptions.find((o) => o.stockItemId === id)
+                                  updateSelected({
+                                    vt_oxygen_stock_item_id: id || undefined,
+                                    oxygen_sensor_serial: opt?.serialFromStock ?? "",
+                                  })
+                                }}
+                                className="w-full px-3 py-2 rounded-xl border border-indigo-200 text-sm bg-white"
+                              >
+                                <option value="">— เลือกแถวสต๊อก —</option>
+                                {oxygenPickOptions.map((o) => (
+                                  <option key={o.stockItemId} value={o.stockItemId}>
+                                    {o.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <p className="text-[10px] text-gray-500 mt-1 leading-snug">
+                                ระบบตัด 1 ชิ้นจากแถวนี้ตอน COMPLETED — SN ดึงจากสต๊อกถ้ามี
+                              </p>
+                            </div>
+                            {(() => {
+                              const pick = oxygenPickOptions.find((o) => o.stockItemId === sel.vt_oxygen_stock_item_id)
+                              if (!pick) return null
+                              if (pick.serialFromStock) {
+                                return (
+                                  <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 px-3 py-2">
+                                    <p className="text-[10px] text-indigo-800 font-semibold mb-0.5">SN จากสต๊อก</p>
+                                    <p className="font-mono text-sm text-indigo-950">{pick.serialFromStock}</p>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <div>
+                                  <label className="block text-[11px] font-semibold text-indigo-800 mb-1">
+                                    SN บนเซนเซอร์จริง (กรอกเมื่อแถวสต๊อกไม่ลง SN รายชิ้น)
+                                  </label>
+                                  <input
+                                    value={sel.oxygen_sensor_serial ?? ""}
+                                    onChange={(e) => updateSelected({ oxygen_sensor_serial: e.target.value })}
+                                    placeholder="หลังติดตั้ง — บันทึกลง Oxygen History"
+                                    className="w-full px-3 py-2 rounded-xl border border-indigo-200 text-sm bg-white font-mono"
+                                  />
+                                </div>
+                              )
+                            })()}
+                          </div>
+                        )}
+                        {!sel.vt_oxygen_sensor_action && (
+                          <p className="text-[10px] text-indigo-600/90">
+                            งานเก่าที่ยังไม่เลือก: ระบบยังอ่านจากข้อความใน &quot;ผลการวิเคราะห์&quot; / &quot;วิธีแก้ไข&quot; ได้ตามเดิม
+                          </p>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
                 <div className="p-4 bg-green-50 rounded-2xl border border-green-100">
@@ -2557,42 +2939,44 @@ export default function ServiceRequestPage() {
                   </div>
                 )
               })()}
-              <div className="glass-card rounded-3xl p-4 space-y-2">
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">FSM Transitions (Reusable Service)</p>
-                <p className="text-[10px] text-gray-500">สถานะที่ role นี้กดได้ตอนนี้</p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                  {fsm.getAvailableTransitions(sel).map((t) => (
-                    <button
-                      key={`${t.from}-${t.to}`}
-                      type="button"
-                      onClick={() => {
-                        setTransitionError("")
-                        const res = fsm.transitionJobState(sel.id, t.to)
-                        if (!res.ok) {
-                          const reason = res.reason || "ไม่สามารถเปลี่ยนสถานะได้"
-                          setTransitionError(reason)
-                          console.warn(reason)
-                          return
-                        }
-                        const live = readJobs([])
-                        const updated = live.find((j) => j.id === sel.id) || null
-                        setJobs(live)
-                        setSelected(updated)
-                      }}
-                      className="py-2 rounded-xl border border-gray-200 bg-white text-xs font-bold text-gray-700 hover:bg-gray-50"
-                    >
-                      {t.from} {"->"} {t.to}
-                    </button>
-                  ))}
-                  {fsm.getAvailableTransitions(sel).length === 0 && (
-                    <p className="text-xs text-gray-400">ไม่มี transition ที่ role นี้ทำได้</p>
-                  )}
+              {profile?.role === "admin" && (
+                <div className="glass-card rounded-3xl p-4 space-y-2">
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">FSM Transitions (Admin Debug)</p>
+                  <p className="text-[10px] text-gray-500">สำหรับตรวจสอบ transition rule เท่านั้น</p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    {fsm.getAvailableTransitions(sel).map((t) => (
+                      <button
+                        key={`${t.from}-${t.to}`}
+                        type="button"
+                        onClick={() => {
+                          setTransitionError("")
+                          const res = fsm.transitionJobState(sel.id, t.to)
+                          if (!res.ok) {
+                            const reason = res.reason || "ไม่สามารถเปลี่ยนสถานะได้"
+                            setTransitionError(reason)
+                            console.warn(reason)
+                            return
+                          }
+                          const live = readJobs([])
+                          const updated = live.find((j) => j.id === sel.id) || null
+                          setJobs(live)
+                          setSelected(updated)
+                        }}
+                        className="py-2 rounded-xl border border-gray-200 bg-white text-xs font-bold text-gray-700 hover:bg-gray-50"
+                      >
+                        {t.from} {"->"} {t.to}
+                      </button>
+                    ))}
+                    {fsm.getAvailableTransitions(sel).length === 0 && (
+                      <p className="text-xs text-gray-400">ไม่มี transition ที่ role นี้ทำได้</p>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Quotation */}
               {!isCommissioningTestJob(sel) &&
-                (statusFlow.indexOf(sel.status) >= Math.max(0, statusFlow.indexOf("รอ Quotation Approve")) ||
+                (selectedJobFlow.indexOf(sel.status) >= Math.max(0, selectedJobFlow.indexOf("รอ Quotation Approve")) ||
                   sel.status === "รอ Quotation Approve" ||
                   sel.status === "รอ PO" ||
                   sel.status === "ในคิว" ||
@@ -2642,18 +3026,24 @@ export default function ServiceRequestPage() {
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Calibration Certificate</p>
                   <div className="grid grid-cols-2 gap-3">
-                    <input
-                      type="date"
-                      value={sel.calibration_date || ""}
-                      onChange={(e) => updateSelected({ calibration_date: e.target.value, due_date: addOneYear(e.target.value) })}
-                      className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
-                    />
-                    <input
-                      value={sel.due_date || ""}
-                      readOnly
-                      placeholder="Due date (+1 ปี)"
-                      className="px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50 text-sm"
-                    />
+                    <div>
+                      <input
+                        type="date"
+                        value={sel.calibration_date || ""}
+                        onChange={(e) => updateSelected({ calibration_date: e.target.value, due_date: addOneYear(e.target.value) })}
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                      />
+                      <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(sel.calibration_date)}</p>
+                    </div>
+                    <div>
+                      <div className="px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 min-h-[38px] flex flex-col justify-center gap-px">
+                        <span className="text-[10px] text-gray-500 leading-tight">ครบกำหนดสอบเทียบถัดไป (+1 ปี)</span>
+                        <span className="text-xs font-medium text-gray-900 leading-tight">{formatThDateFromYMD(sel.due_date)}</span>
+                        {sel.due_date && (
+                          <span className="text-[9px] text-gray-400 font-mono leading-none">{sel.due_date}</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2750,11 +3140,23 @@ export default function ServiceRequestPage() {
         </div>
       )}
 
-      {showNew && <NewJobDialog orgNames={orgNames} onClose={()=>setShowNew(false)} onSave={j=>{
-        setJobs(p=>[{ ...j, source: "manual" },...p]);setSelected(j);setMainTab("jobs")
-        const orgs = readOrganizations([])
-        writeOrganizations(upsertOrganizationByName(orgs, j.customer_org, j.customer_name))
-      }} />}
+      {showNew && <NewJobDialog
+        orgNames={orgNames}
+        existingJobs={jobs}
+        onClose={()=>setShowNew(false)}
+        onOpenExistingJob={(job) => {
+          setSelected(job)
+          setMainTab("jobs")
+          setFilterType("all")
+          setFilterStatus("ทั้งหมด")
+          setSearch(job.job_no)
+        }}
+        onSave={j=>{
+          setJobs(p=>[{ ...j, source: "manual" },...p]);setSelected(j);setMainTab("jobs")
+          const orgs = readOrganizations([])
+          writeOrganizations(upsertOrganizationByName(orgs, j.customer_org, j.customer_name))
+        }}
+      />}
       {showQuoteDialog && sel && <QuotationDraftDialog job={sel} onClose={()=>setShowQuoteDialog(false)} />}
       {cancelDialogJob && (
         <CancelJobDialog
@@ -2791,5 +3193,13 @@ export default function ServiceRequestPage() {
         />
       )}
     </div>
+  )
+}
+
+export default function ServiceRequestPage() {
+  return (
+    <Suspense fallback={<div className="p-1 text-sm text-gray-500">Loading service requests...</div>}>
+      <ServiceRequestPageContent />
+    </Suspense>
   )
 }

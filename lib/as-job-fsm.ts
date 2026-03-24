@@ -7,8 +7,10 @@ import {
   appendStockNotification,
   readJobs,
   readJobsVersion,
+  readOxygenSensorHistory,
   readStockItems,
   type ASServiceJob,
+  type ASStockSnapshotItem,
   writeStockItems,
   writeJobsWithConcurrencyCheck,
 } from "@/lib/mock/as-store"
@@ -134,15 +136,76 @@ function hasOxygenNoChangeText(job: ASServiceJob): boolean {
   return hasOxygenWord && hasNoChangeWord
 }
 
+/** ค่าเลือกในฟอร์มชนะการไล่ข้อความ; งานเก่าไม่มีฟิลด์ยังใช้ heuristics เดิม */
+function getVTOxygenSensorDecision(job: ASServiceJob): { replaced: boolean; noChange: boolean } {
+  const a = job.vt_oxygen_sensor_action
+  if (a === "replaced") return { replaced: true, noChange: false }
+  if (a === "no_change") return { replaced: false, noChange: true }
+  return {
+    replaced: hasOxygenReplacementText(job),
+    noChange: hasOxygenNoChangeText(job),
+  }
+}
+
+/** กฎเดียวกับการหักสต๊อกตอนปิดงาน VT + เปลี่ยน O₂ — ใช้ซิงก์กับหน้า Service */
+export function isVTOxygenSensorStockLine(i: ASStockSnapshotItem): boolean {
+  const name = `${i.name || ""} ${i.model || ""}`.toLowerCase()
+  return name.includes("oxygen") && name.includes("sensor") && (name.includes("vt") || name.includes("vt650") || name.includes("vt900"))
+}
+
+export function getVTOxygenSensorStockRollup(): {
+  totalQty: number
+  lines: { id: string; name: string; model?: string; qty: number }[]
+  hasAvailable: boolean
+} {
+  const items = readStockItems([])
+  const lines = items.filter(isVTOxygenSensorStockLine).map((i) => ({
+    id: i.id,
+    name: (i.name || "—").trim(),
+    model: i.model?.trim(),
+    qty: Math.max(0, Math.floor(Number(i.qty) || 0)),
+  }))
+  const totalQty = lines.reduce((s, l) => s + l.qty, 0)
+  return { totalQty, lines, hasAvailable: lines.some((l) => l.qty > 0) }
+}
+
+export type VTOxygenStockPickOption = {
+  stockItemId: string
+  /** SN จากแถวสต๊อก (ว่าง = รายการนับจำนวน ไม่ลง SN รายชิ้น) */
+  serialFromStock: string
+  label: string
+}
+
+/** รายการที่เลือกตัดได้ (qty &gt; 0) — ใช้ใน UI Service */
+export function getVTOxygenSensorPickOptions(): VTOxygenStockPickOption[] {
+  const items = readStockItems([])
+  const out: VTOxygenStockPickOption[] = []
+  for (const i of items) {
+    if (!isVTOxygenSensorStockLine(i) || i.qty <= 0) continue
+    const name = (i.name || "—").trim()
+    const model = i.model?.trim()
+    const sn = (i.serial_number || "").trim()
+    const base = `${name}${model ? ` · ${model}` : ""}`
+    if (sn) {
+      out.push({
+        stockItemId: i.id,
+        serialFromStock: sn,
+        label: `${base} · SN ${sn} (คงเหลือ ${i.qty})`,
+      })
+    } else {
+      out.push({
+        stockItemId: i.id,
+        serialFromStock: "",
+        label: `${base} · ไม่มี SN รายชิ้น (คงเหลือ ${i.qty})`,
+      })
+    }
+  }
+  return out
+}
+
 function findOxygenSensorStockItem() {
   const items = readStockItems([])
-  const candidates = items
-    .filter((i) => i.qty > 0)
-    .filter((i) => {
-      const name = `${i.name || ""} ${i.model || ""}`.toLowerCase()
-      return name.includes("oxygen") && name.includes("sensor") && (name.includes("vt") || name.includes("vt650") || name.includes("vt900"))
-    })
-  return candidates[0] || null
+  return items.filter((i) => i.qty > 0).find(isVTOxygenSensorStockLine) || null
 }
 
 function validateDomainCompletionRules(job: ASServiceJob, to: JobFsmState): { ok: boolean; reason?: string } {
@@ -160,9 +223,26 @@ function validateDomainCompletionRules(job: ASServiceJob, to: JobFsmState): { ok
 
   // Oxygen Sensor policy: only calibration jobs for VT-family equipment.
   if (job.job_type === "calibration" && isVTFamilyModel(job.model) && !isCommissioningLike(job)) {
-    const replaced = hasOxygenReplacementText(job)
-    const noChange = hasOxygenNoChangeText(job)
+    const { replaced, noChange } = getVTOxygenSensorDecision(job)
     if (replaced) {
+      const items = readStockItems([])
+      const pickOpts = getVTOxygenSensorPickOptions()
+      if (job.vt_oxygen_sensor_action === "replaced" && pickOpts.length > 0 && !job.vt_oxygen_stock_item_id?.trim()) {
+        return {
+          ok: false,
+          reason: "เลือกรายการสต๊อก Oxygen Sensor ที่จะตัดจ่าย (ดึงจาก Stock)",
+        }
+      }
+      if (job.vt_oxygen_stock_item_id?.trim()) {
+        const line = items.find((i) => i.id === job.vt_oxygen_stock_item_id)
+        if (!line || !isVTOxygenSensorStockLine(line) || line.qty <= 0) {
+          return {
+            ok: false,
+            reason: "รายการสต๊อก Oxygen ที่เลือกไม่พร้อมจ่ายหรือหมด — เลือกใหม่",
+          }
+        }
+        return { ok: true }
+      }
       const stockItem = findOxygenSensorStockItem()
       if (!stockItem) {
         return { ok: false, reason: "สต๊อก Oxygen Sensor (VT650/VT900A/VT) ไม่พอสำหรับเปลี่ยน" }
@@ -177,6 +257,87 @@ function validateDomainCompletionRules(job: ASServiceJob, to: JobFsmState): { ok
     }
   }
 
+  return { ok: true }
+}
+
+/**
+ * After job is persisted as closed: deduct VT Oxygen stock + append history.
+ * Idempotent: skips if oxygen history already has an entry for this job (e.g. FSM path ran first).
+ */
+export function applyVTOxygenSensorEffectsOnCalibrationClose(job: ASServiceJob): void {
+  if (job.job_type !== "calibration" || !isVTFamilyModel(job.model)) return
+  if (readOxygenSensorHistory([]).some((e) => e.job_id === job.id)) return
+
+  const { replaced, noChange } = getVTOxygenSensorDecision(job)
+  if (replaced) {
+    const stockItems = readStockItems([])
+    const preferredId = job.vt_oxygen_stock_item_id?.trim()
+    let oxygenIdx = preferredId
+      ? stockItems.findIndex((i) => i.id === preferredId && i.qty > 0 && isVTOxygenSensorStockLine(i))
+      : -1
+    if (oxygenIdx < 0) {
+      oxygenIdx = stockItems.findIndex((i) => i.qty > 0 && isVTOxygenSensorStockLine(i))
+    }
+    if (oxygenIdx >= 0) {
+      const stockItem = stockItems[oxygenIdx]
+      const before = stockItem.qty
+      const after = Math.max(0, before - 1)
+      const nextStockItems = stockItems.map((i, idx) => (idx === oxygenIdx ? { ...i, qty: after } : i))
+      writeStockItems(nextStockItems)
+      appendOxygenSensorHistory({
+        id: newId("oxy"),
+        job_id: job.id,
+        job_no: job.job_no,
+        serial_number: job.serial_number,
+        oxygen_sensor_serial: job.oxygen_sensor_serial?.trim() || undefined,
+        model: job.model,
+        job_type: job.job_type,
+        changed: true,
+        note: `เปลี่ยน Oxygen Sensor · ตัดสต๊อก ${stockItem.name || "—"} (${before}→${after})`,
+        stock_item_id: stockItem.id,
+        stock_item_name: stockItem.name,
+        stock_qty_before: before,
+        stock_qty_after: after,
+        created_at: new Date().toISOString(),
+      })
+    } else {
+      appendOxygenSensorHistory({
+        id: newId("oxy"),
+        job_id: job.id,
+        job_no: job.job_no,
+        serial_number: job.serial_number,
+        oxygen_sensor_serial: job.oxygen_sensor_serial?.trim() || undefined,
+        model: job.model,
+        job_type: job.job_type,
+        changed: true,
+        note: "เปลี่ยน Oxygen Sensor — ไม่พบแถวสต๊อกให้ตัดจ่ายขณะปิดงาน (ตรวจสต๊อก/รายการ VT O₂)",
+        created_at: new Date().toISOString(),
+      })
+    }
+  } else if (noChange || isCommissioningLike(job)) {
+    appendOxygenSensorHistory({
+      id: newId("oxy"),
+      job_id: job.id,
+      job_no: job.job_no,
+      serial_number: job.serial_number,
+      oxygen_sensor_serial: job.oxygen_sensor_serial?.trim() || undefined,
+      model: job.model,
+      job_type: job.job_type,
+      changed: false,
+      note: isCommissioningLike(job)
+        ? "เครื่องใหม่/งาน Commissioning ไม่ต้องเปลี่ยน Oxygen Sensor"
+        : "ไม่เปลี่ยน Oxygen Sensor (บันทึกเหตุผลไว้ในรายงานงาน)",
+      created_at: new Date().toISOString(),
+    })
+  }
+}
+
+function validateInboundTrackingRules(job: ASServiceJob): { ok: boolean; reason?: string } {
+  if ((job.job_type === "repair" || job.job_type === "calibration") && job.receive_channel === "ขนส่งเอกชน") {
+    if (!job.tracking_in?.trim() || job.tracking_in.trim() === "—") {
+      return { ok: false, reason: "งาน Repair/Calibration ที่รับจากขนส่งเอกชนต้องมี Tracking In" }
+    }
+  }
   return { ok: true }
 }
 
@@ -201,6 +362,8 @@ export function canTransition(job: ASServiceJob, to: JobFsmState, actorRole: Job
   const rule = JOB_FSM_TRANSITIONS.find((t) => t.from === state && t.to === to)
   if (!rule) return { ok: false, reason: `Transition not allowed: ${state} -> ${to}` }
   if (!rule.roles.includes(actorRole)) return { ok: false, reason: "Role is not allowed" }
+  const inboundRule = validateInboundTrackingRules(job)
+  if (!inboundRule.ok) return inboundRule
   if (!hasRequiredData(job, rule.required)) return { ok: false, reason: "Required data is missing before transition" }
   const domainRule = validateDomainCompletionRules(job, to)
   if (!domainRule.ok) return domainRule
@@ -280,52 +443,8 @@ export function transitionJobState(
     const wr = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
     if (!wr.ok) continue
 
-    if (to === "COMPLETED" && transitionTarget.job_type === "calibration" && isVTFamilyModel(transitionTarget.model)) {
-      const replaced = hasOxygenReplacementText(transitionTarget)
-      const noChange = hasOxygenNoChangeText(transitionTarget)
-      if (replaced) {
-        const stockItems = readStockItems([])
-        const oxygenIdx = stockItems.findIndex((i) => {
-          const name = `${i.name || ""} ${i.model || ""}`.toLowerCase()
-          return i.qty > 0 && name.includes("oxygen") && name.includes("sensor") && (name.includes("vt") || name.includes("vt650") || name.includes("vt900"))
-        })
-        if (oxygenIdx >= 0) {
-          const stockItem = stockItems[oxygenIdx]
-          const before = stockItem.qty
-          const after = Math.max(0, before - 1)
-          const nextStockItems = stockItems.map((i, idx) => (idx === oxygenIdx ? { ...i, qty: after } : i))
-          writeStockItems(nextStockItems)
-          appendOxygenSensorHistory({
-            id: newId("oxy"),
-            job_id: transitionTarget.id,
-            job_no: transitionTarget.job_no,
-            serial_number: transitionTarget.serial_number,
-            model: transitionTarget.model,
-            job_type: transitionTarget.job_type,
-            changed: true,
-            note: "เปลี่ยน Oxygen Sensor และตัดสต๊อกอัตโนมัติ",
-            stock_item_id: stockItem.id,
-            stock_item_name: stockItem.name,
-            stock_qty_before: before,
-            stock_qty_after: after,
-            created_at: new Date().toISOString(),
-          })
-        }
-      } else if (noChange || isCommissioningLike(transitionTarget)) {
-        appendOxygenSensorHistory({
-          id: newId("oxy"),
-          job_id: transitionTarget.id,
-          job_no: transitionTarget.job_no,
-          serial_number: transitionTarget.serial_number,
-          model: transitionTarget.model,
-          job_type: transitionTarget.job_type,
-          changed: false,
-          note: isCommissioningLike(transitionTarget)
-            ? "เครื่องใหม่/งาน Commissioning ไม่ต้องเปลี่ยน Oxygen Sensor"
-            : "ไม่เปลี่ยน Oxygen Sensor (บันทึกเหตุผลไว้ในรายงานงาน)",
-          created_at: new Date().toISOString(),
-        })
-      }
+    if (to === "COMPLETED") {
+      applyVTOxygenSensorEffectsOnCalibrationClose(transitionTarget)
     }
 
     const rule = JOB_FSM_TRANSITIONS.find((t) => t.from === prevState && t.to === to)

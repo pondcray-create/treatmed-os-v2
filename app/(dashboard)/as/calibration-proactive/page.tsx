@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Bell, CalendarClock, Plus, Search, X } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import {
+  AS_STORE_KEYS,
   readJobs,
   readOrganizations,
   readProactiveCalibrationAssets,
@@ -15,6 +16,7 @@ import {
   type ASServiceJob,
   type ASProactiveCalibrationAsset,
 } from "@/lib/mock/as-store"
+import { formatThDateFromYMD, thDateInputBeHint } from "@/lib/format-th-datetime"
 
 function daysDiff(fromISO: string, toISO: string) {
   const from = new Date(`${fromISO}T00:00:00.000Z`).getTime()
@@ -48,6 +50,7 @@ const SEED_ASSETS: ASProactiveCalibrationAsset[] = [
 
 export default function CalibrationProactivePage() {
   const [assets, setAssets] = useState<ASProactiveCalibrationAsset[]>([])
+  const [jobs, setJobs] = useState<ASServiceJob[]>([])
   const [search, setSearch] = useState("")
   const [openForm, setOpenForm] = useState(false)
   const today = new Date().toISOString().split("T")[0]
@@ -71,6 +74,26 @@ export default function CalibrationProactivePage() {
     return () => {
       window.removeEventListener("storage", sync)
       window.removeEventListener("as-store-updated", sync)
+    }
+  }, [])
+
+  useEffect(() => {
+    const syncJobs = () => setJobs(readJobs([]))
+    syncJobs()
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key && ev.key !== AS_STORE_KEYS.jobs && ev.key !== AS_STORE_KEYS.jobsVersion) return
+      syncJobs()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.jobs && key !== AS_STORE_KEYS.jobsVersion) return
+      syncJobs()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
 
@@ -127,8 +150,14 @@ export default function CalibrationProactivePage() {
   }
 
   function createCalJob(asset: ASProactiveCalibrationAsset) {
-    const jobs = readJobs([])
-    const existed = jobs.find((j) => j.source === "proactive" && j.source_dispatch_id === asset.id)
+    const liveJobs = readJobs([])
+    const existed = liveJobs.find(
+      (j) =>
+        j.source === "proactive" &&
+        j.source_dispatch_id === asset.id &&
+        j.status !== "ปิดงาน" &&
+        j.status !== "ยกเลิก",
+    )
     if (existed) return
 
     const todayISO = new Date().toISOString().split("T")[0]
@@ -155,21 +184,38 @@ export default function CalibrationProactivePage() {
       source_dispatch_id: asset.id,
       created_at: todayISO,
     }
-    writeJobs([job, ...jobs])
+    writeJobs([job, ...liveJobs])
     setAssets((prev) => [...prev])
 
     const orgs = readOrganizations([])
     writeOrganizations(upsertOrganizationByName(orgs, asset.customer_org, asset.customer_name))
   }
 
-  const proactiveJobMap = useMemo(() => {
-    const jobs = readJobs([])
+  const proactiveOpenJobMap = useMemo(() => {
     return new Map(
       jobs
-        .filter((j) => j.source === "proactive" && j.source_dispatch_id)
+        .filter(
+          (j) =>
+            j.source === "proactive" &&
+            j.source_dispatch_id &&
+            j.status !== "ปิดงาน" &&
+            j.status !== "ยกเลิก",
+        )
         .map((j) => [j.source_dispatch_id as string, j.id]),
     )
-  }, [assets])
+  }, [jobs])
+  const proactiveClosedJobMap = useMemo(() => {
+    return new Map(
+      jobs
+        .filter(
+          (j) =>
+            j.source === "proactive" &&
+            j.source_dispatch_id &&
+            (j.status === "ปิดงาน" || j.status === "ยกเลิก"),
+        )
+        .map((j) => [j.source_dispatch_id as string, j.id]),
+    )
+  }, [jobs])
 
   return (
     <div className="relative z-10">
@@ -247,14 +293,32 @@ export default function CalibrationProactivePage() {
                   </td>
                   <td className="px-4 py-3 text-gray-700">{a.manufacturer} {a.model}</td>
                   <td className="px-4 py-3 font-mono text-xs text-blue-600">{a.serial_number}</td>
-                  <td className="px-4 py-3 text-gray-600 text-xs">{a.last_calibration_date || "—"}</td>
-                  <td className="px-4 py-3 text-gray-700 font-semibold">{a.due_date}</td>
+                  <td className="px-4 py-2 text-gray-600 align-top">
+                    {a.last_calibration_date ? (
+                      <div className="space-y-px">
+                        <span className="block text-[10px] font-medium text-gray-700 leading-tight">
+                          {formatThDateFromYMD(a.last_calibration_date)}
+                        </span>
+                        <span className="block font-mono text-[9px] leading-none text-gray-400">{a.last_calibration_date}</span>
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700 align-top">
+                    <div className="space-y-px">
+                      <span className="block text-[10px] font-medium text-gray-800 leading-tight">
+                        {formatThDateFromYMD(a.due_date)}
+                      </span>
+                      <span className="block font-mono text-[9px] leading-none text-gray-400">{a.due_date}</span>
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${stateColor}`}>{stateLabel}</span>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">{a.note || "—"}</td>
                   <td className="px-4 py-3">
-                    {proactiveJobMap.has(a.id) ? (
+                    {proactiveOpenJobMap.has(a.id) ? (
                       <div className="flex items-center gap-2">
                         <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-xs font-bold">สร้างแล้ว</span>
                         <Link
@@ -265,12 +329,17 @@ export default function CalibrationProactivePage() {
                         </Link>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => createCalJob(a)}
-                        className="px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition-colors"
-                      >
-                        Create Cal Job
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {proactiveClosedJobMap.has(a.id) && (
+                          <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600 text-xs font-bold">รอบก่อนปิดแล้ว</span>
+                        )}
+                        <button
+                          onClick={() => createCalJob(a)}
+                          className="px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition-colors"
+                        >
+                          {proactiveClosedJobMap.has(a.id) ? "Create รอบใหม่" : "Create Cal Job"}
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -311,10 +380,12 @@ export default function CalibrationProactivePage() {
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Last Calibration Date</label>
                   <input type="date" value={form.last_calibration_date} onChange={(e) => setForm((f) => ({ ...f, last_calibration_date: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" />
+                  <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(form.last_calibration_date)}</p>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Due Date *</label>
                   <input type="date" required value={form.due_date} onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" />
+                  <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(form.due_date)}</p>
                 </div>
               </div>
               <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="หมายเหตุ" />

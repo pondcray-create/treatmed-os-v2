@@ -1,8 +1,26 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Search, Plus, ChevronRight, Star, Phone, Mail, MapPin, Building2, Users, Pencil, Trash2, X, Building } from "lucide-react"
 import { PROVINCES, DEFAULT_ORG_TYPES, DEFAULT_ORG_FORMATS, DEFAULT_POSITIONS, getProvinceInfo } from "@/lib/data/geography"
+import {
+  AS_STORE_KEYS,
+  isInternalStockCustomerOrgName,
+  readJobs,
+  readOrganizations,
+  readProactiveCalibrationAssets,
+  tryReadJSON,
+  writeOrganizations,
+  type ASOrganization,
+  type ASServiceJob,
+} from "@/lib/mock/as-store"
+import { formatThDateFromYMD, formatThDateTime } from "@/lib/format-th-datetime"
+
+function formatTimelineInstant(s: string): string {
+  if (!s) return "—"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return formatThDateFromYMD(s)
+  return formatThDateTime(s)
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Contact {
@@ -27,43 +45,18 @@ interface Organization {
   created_at: string
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-const MOCK_ORGS: Organization[] = [
-  {
-    id: "1", name: "โรงพยาบาลศิริราช", org_type: "Existing", org_format: "Large Hospital รัฐ",
-    province: "กรุงเทพมหานคร", region: "กลาง", health_district: 13, one_qa: true,
-    created_at: "2024-01-15",
-    contacts: [
-      { id: "c1", name: "นพ.วีระชัย สมิทธ์", position: "แพทย์", email: "weerachai@siriraj.ac.th", tel: "02-419-7000", is_primary: true },
-      { id: "c2", name: "นางสาวพรรณี วงศ์ดี", position: "ฝ่ายจัดซื้อ", email: "pannee@siriraj.ac.th", tel: "02-419-7001", is_primary: false },
-    ]
-  },
-  {
-    id: "2", name: "โรงพยาบาลกรุงเทพ", org_type: "Existing", org_format: "Large Hospital เอกชน",
-    province: "กรุงเทพมหานคร", region: "กลาง", health_district: 13, one_qa: false,
-    created_at: "2024-02-20",
-    contacts: [
-      { id: "c3", name: "นายประสิทธิ์ แก้วมณี", position: "วิศวกรชีวการแพทย์", email: "prasit@bgh.co.th", tel: "02-310-3000", is_primary: true },
-    ]
-  },
-  {
-    id: "3", name: "โรงพยาบาลมหาราชนครเชียงใหม่", org_type: "Existing", org_format: "Large Hospital รัฐ",
-    province: "เชียงใหม่", region: "เหนือ", health_district: 1, one_qa: true,
-    created_at: "2024-03-10",
-    contacts: [
-      { id: "c4", name: "นางสมศรี ใจดี", position: "ฝ่ายจัดซื้อ", email: "somsri@cmu.ac.th", tel: "053-935-000", is_primary: true },
-      { id: "c5", name: "นายวิทยา คงดี", position: "เจ้าหน้าที่ไอที", email: "wittaya@cmu.ac.th", tel: "053-935-001", is_primary: false },
-    ]
-  },
-  {
-    id: "4", name: "โรงพยาบาลขอนแก่น", org_type: "New", org_format: "Large Hospital รัฐ",
-    province: "ขอนแก่น", region: "อีสาน", health_district: 7, one_qa: false,
-    created_at: "2024-06-01",
-    contacts: [
-      { id: "c6", name: "นพ.ธีรพล รักดี", position: "ผู้บริหาร", email: "theerapol@kkh.go.th", tel: "043-232-555", is_primary: true },
-    ]
-  },
-]
+type StockCustomerEquipment = {
+  id: string
+  name: string
+  brand: string
+  model?: string
+  serial_number?: string
+  sold_to_org?: string
+  sold_at?: string
+  status?: string
+  last_calibration_date?: string
+  calibration_due_date?: string
+}
 
 // ─── Badge ────────────────────────────────────────────────────────────────────
 function Pill({ children, color }: { children: React.ReactNode; color: string }) {
@@ -298,28 +291,132 @@ function ContactDialog({ contact, onClose, onSave }: { contact: Partial<Contact>
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function CustomersPage() {
-  const [orgs, setOrgs] = useState<Organization[]>(MOCK_ORGS)
-  const [selected, setSelected] = useState<Organization | null>(MOCK_ORGS[0])
+  const [orgs, setOrgs] = useState<Organization[]>([])
+  const [selected, setSelected] = useState<Organization | null>(null)
   const [search, setSearch] = useState("")
   const [filterType, setFilterType] = useState("ทั้งหมด")
   const [filterRegion, setFilterRegion] = useState("ทั้งหมด")
   const [orgDialog, setOrgDialog] = useState<{ open: boolean; data: Partial<Organization> | null }>({ open: false, data: null })
   const [contactDialog, setContactDialog] = useState<{ open: boolean; data: Partial<Contact> | null }>({ open: false, data: null })
+  const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
+  const [stockItems, setStockItems] = useState<StockCustomerEquipment[]>([])
 
-  const filtered = orgs.filter(o => {
+  const customerFacingOrgs = useMemo(
+    () => orgs.filter((o) => !isInternalStockCustomerOrgName(o.name)),
+    [orgs],
+  )
+
+  useEffect(() => {
+    const syncOrgs = () => {
+      const loaded = readOrganizations([]) as Organization[]
+      const visible = loaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
+      setOrgs(loaded)
+      setSelected((prev) => {
+        if (prev && visible.some((o) => o.id === prev.id)) {
+          return visible.find((o) => o.id === prev.id)!
+        }
+        return visible[0] ?? null
+      })
+    }
+    syncOrgs()
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key && ev.key !== AS_STORE_KEYS.orgs) return
+      syncOrgs()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.orgs) return
+      syncOrgs()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
+  }, [])
+
+  useEffect(() => {
+    const syncJobs = () => setServiceJobs(readJobs([]))
+    syncJobs()
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key && ev.key !== AS_STORE_KEYS.jobs && ev.key !== AS_STORE_KEYS.jobsVersion) return
+      syncJobs()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.jobs && key !== AS_STORE_KEYS.jobsVersion) return
+      syncJobs()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
+  }, [])
+
+  useEffect(() => {
+    const syncStock = () => {
+      const rows = tryReadJSON<StockCustomerEquipment[]>(AS_STORE_KEYS.stockItems)
+      setStockItems(Array.isArray(rows) ? rows : [])
+    }
+    syncStock()
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key && ev.key !== AS_STORE_KEYS.stockItems) return
+      syncStock()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.stockItems) return
+      syncStock()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
+  }, [])
+
+  const filtered = customerFacingOrgs.filter((o) => {
     const q = search.toLowerCase()
     return (o.name.toLowerCase().includes(q) || o.contacts.some(c => c.name.toLowerCase().includes(q))) &&
       (filterType === "ทั้งหมด" || o.org_type === filterType) &&
       (filterRegion === "ทั้งหมด" || o.region === filterRegion)
   })
 
+  function persistOrgs(next: Organization[]) {
+    writeOrganizations(next as unknown as ASOrganization[])
+  }
+
   function saveOrg(data: Partial<Organization>) {
     if (data.id) {
-      setOrgs(prev => prev.map(o => o.id === data.id ? (Object.assign({}, o, data) as Organization) : o))
-      setSelected(prev => prev?.id === data.id ? (Object.assign({}, prev, data) as Organization) : prev)
+      setOrgs((prev) => {
+        const next = prev.map((o) => (o.id === data.id ? ({ ...o, ...data } as Organization) : o))
+        persistOrgs(next)
+        return next
+      })
+      setSelected((prev) => (prev?.id === data.id ? ({ ...prev, ...data } as Organization) : prev))
     } else {
-      const n: Organization = { id: Date.now().toString(), contacts: [], created_at: new Date().toISOString(), name: data.name ?? "", org_type: data.org_type ?? "New", org_format: data.org_format ?? "", province: data.province ?? "", region: data.region ?? "", health_district: data.health_district ?? 0, one_qa: data.one_qa ?? false }
-      setOrgs(prev => [...prev, n])
+      const n: Organization = {
+        id: Date.now().toString(),
+        contacts: [],
+        created_at: new Date().toISOString(),
+        name: data.name ?? "",
+        org_type: data.org_type ?? "New",
+        org_format: data.org_format ?? "",
+        province: data.province ?? "",
+        region: data.region ?? "",
+        health_district: data.health_district ?? 0,
+        one_qa: data.one_qa ?? false,
+      }
+      setOrgs((prev) => {
+        const next = [...prev, n]
+        persistOrgs(next)
+        return next
+      })
+      setSelected(n)
     }
   }
 
@@ -327,31 +424,169 @@ export default function CustomersPage() {
     if (!selected) return
     let contacts: Contact[]
     if (data.id) {
-      contacts = selected.contacts.map(c => c.id === data.id ? { ...c, ...data } as Contact : c)
+      contacts = selected.contacts.map((c) => (c.id === data.id ? ({ ...c, ...data } as Contact) : c))
     } else {
-      const n: Contact = { id: Date.now().toString(), name: data.name ?? "", position: data.position ?? "", email: data.email ?? "", tel: data.tel ?? "", is_primary: data.is_primary ?? false }
-      contacts = data.is_primary ? [...selected.contacts.map(c => ({ ...c, is_primary: false })), n] : [...selected.contacts, n]
+      const n: Contact = {
+        id: Date.now().toString(),
+        name: data.name ?? "",
+        position: data.position ?? "",
+        email: data.email ?? "",
+        tel: data.tel ?? "",
+        is_primary: data.is_primary ?? false,
+      }
+      contacts = data.is_primary
+        ? [...selected.contacts.map((c) => ({ ...c, is_primary: false })), n]
+        : [...selected.contacts, n]
     }
     const updated = { ...selected, contacts }
-    setOrgs(prev => prev.map(o => o.id === selected.id ? updated : o))
+    setOrgs((prev) => {
+      const next = prev.map((o) => (o.id === selected.id ? updated : o))
+      persistOrgs(next)
+      return next
+    })
     setSelected(updated)
   }
 
   function setPrimary(cid: string) {
     if (!selected) return
-    const updated = { ...selected, contacts: selected.contacts.map(c => ({ ...c, is_primary: c.id === cid })) }
-    setOrgs(prev => prev.map(o => o.id === selected.id ? updated : o))
+    const updated = { ...selected, contacts: selected.contacts.map((c) => ({ ...c, is_primary: c.id === cid })) }
+    setOrgs((prev) => {
+      const next = prev.map((o) => (o.id === selected.id ? updated : o))
+      persistOrgs(next)
+      return next
+    })
     setSelected(updated)
   }
 
   function deleteContact(cid: string) {
     if (!selected) return
-    const updated = { ...selected, contacts: selected.contacts.filter(c => c.id !== cid) }
-    setOrgs(prev => prev.map(o => o.id === selected.id ? updated : o))
+    const updated = { ...selected, contacts: selected.contacts.filter((c) => c.id !== cid) }
+    setOrgs((prev) => {
+      const next = prev.map((o) => (o.id === selected.id ? updated : o))
+      persistOrgs(next)
+      return next
+    })
     setSelected(updated)
   }
 
   const selInfo = selected ? getProvinceInfo(selected.province) : null
+  const selectedServiceJobs = useMemo(() => {
+    if (!selected) return []
+    const key = selected.name.trim().toLowerCase()
+    return serviceJobs
+      .filter((j) => j.customer_org.trim().toLowerCase() === key)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  }, [selected, serviceJobs])
+
+  const serviceTimeline = useMemo(() => {
+    return selectedServiceJobs.map((j) => {
+      const startAt = j.received_date || j.created_at
+      const isReturned = j.status === "ปิดงาน" || !!j.tracking_out || !!j.stock_return_received_at
+      const endAt = j.stock_return_received_at || j.tracking_out || (j.status === "ปิดงาน" ? j.created_at : "")
+      return {
+        id: j.id,
+        job_no: j.job_no,
+        equipment: `${j.model || "—"}${j.serial_number ? ` · SN ${j.serial_number}` : ""}`,
+        startAt,
+        status: j.status,
+        endAt,
+        isReturned,
+      }
+    })
+  }, [selectedServiceJobs])
+
+  const selectedEquipmentRegistry = useMemo(() => {
+    if (!selected) return []
+    const orgKey = selected.name.trim().toLowerCase()
+    const fromSoldStock = stockItems.filter((s) => (s.sold_to_org || "").trim().toLowerCase() === orgKey)
+    const fromService = selectedServiceJobs
+    const proactiveAssets = readProactiveCalibrationAssets([])
+    const proactiveBySn = new Map(
+      proactiveAssets
+        .filter((a) => a.serial_number?.trim())
+        .map((a) => [a.serial_number.trim().toLowerCase(), a] as const),
+    )
+    const byKey = new Map<
+      string,
+      {
+        key: string
+        serial: string
+        model: string
+        manufacturer: string
+        source: "stock" | "service" | "both"
+        lastStatus: string
+        lastSeenAt: string
+        jobsCount: number
+        lastCalibrationDate?: string
+        dueDate?: string
+        lifecycle: "active" | "retired"
+      }
+    >()
+
+    for (const item of fromSoldStock) {
+      const serial = (item.serial_number || "").trim()
+      const model = (item.model || item.name || "").trim() || "—"
+      const maker = (item.brand || "").trim() || "—"
+      const key = serial ? `sn:${serial.toLowerCase()}` : `mk:${maker.toLowerCase()}|md:${model.toLowerCase()}`
+      byKey.set(key, {
+        key,
+        serial: serial || "—",
+        model,
+        manufacturer: maker,
+        source: "stock",
+        lastStatus: item.status || "sold",
+        lastSeenAt: item.sold_at || "",
+        jobsCount: 0,
+        lastCalibrationDate: item.last_calibration_date,
+        dueDate: item.calibration_due_date,
+        lifecycle: serial && proactiveBySn.get(serial.toLowerCase())?.retired_at ? "retired" : "active",
+      })
+    }
+
+    for (const job of fromService) {
+      const serial = (job.serial_number || "").trim()
+      const model = (job.model || "").trim() || "—"
+      const maker = (job.manufacturer || "").trim() || "—"
+      const key = serial ? `sn:${serial.toLowerCase()}` : `mk:${maker.toLowerCase()}|md:${model.toLowerCase()}`
+      const exists = byKey.get(key)
+      if (!exists) {
+        byKey.set(key, {
+          key,
+          serial: serial || "—",
+          model,
+          manufacturer: maker,
+          source: "service",
+          lastStatus: job.status,
+          lastSeenAt: job.created_at || job.received_date || "",
+          jobsCount: 1,
+          lastCalibrationDate: job.calibration_date,
+          dueDate: job.due_date,
+          lifecycle: serial && proactiveBySn.get(serial.toLowerCase())?.retired_at ? "retired" : "active",
+        })
+        continue
+      }
+      const nextLastSeenAt = (job.created_at || job.received_date || "") > exists.lastSeenAt ? (job.created_at || job.received_date || "") : exists.lastSeenAt
+      byKey.set(key, {
+        ...exists,
+        source: exists.source === "stock" ? "both" : exists.source,
+        lastStatus: nextLastSeenAt === (job.created_at || job.received_date || "") ? job.status : exists.lastStatus,
+        lastSeenAt: nextLastSeenAt,
+        jobsCount: exists.jobsCount + 1,
+        lastCalibrationDate: exists.lastCalibrationDate || job.calibration_date,
+        dueDate: exists.dueDate || job.due_date,
+        lifecycle:
+          exists.lifecycle === "retired" || (serial && proactiveBySn.get(serial.toLowerCase())?.retired_at)
+            ? "retired"
+            : "active",
+      })
+    }
+
+    return Array.from(byKey.values()).sort((a, b) => {
+      if (a.serial === "—" && b.serial !== "—") return 1
+      if (a.serial !== "—" && b.serial === "—") return -1
+      return a.model.localeCompare(b.model, "th")
+    })
+  }, [selected, stockItems, selectedServiceJobs])
 
   return (
     <div className="h-full flex flex-col">
@@ -359,7 +594,9 @@ export default function CustomersPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">ทะเบียนลูกค้า</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{orgs.length} หน่วยงาน · {orgs.reduce((a, o) => a + o.contacts.length, 0)} ผู้ติดต่อ</p>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {customerFacingOrgs.length} หน่วยงาน · {customerFacingOrgs.reduce((a, o) => a + o.contacts.length, 0)} ผู้ติดต่อ
+          </p>
         </div>
         <button onClick={() => setOrgDialog({ open: true, data: {} })}
           className="flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl text-sm font-semibold shadow-sm transition-colors">
@@ -461,14 +698,104 @@ export default function CustomersPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-white rounded-3xl border border-gray-200 p-5">
                 <p className="text-xs text-gray-400 mb-2 flex items-center gap-1">งานซ่อม / สอบเทียบ</p>
-                <p className="text-3xl font-black text-gray-200">—</p>
-                <p className="text-xs text-gray-400 mt-1">เชื่อมข้อมูลจาก Service Jobs</p>
+                <p className="text-3xl font-black text-gray-900">{selectedServiceJobs.length}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  ปิดงานแล้ว {selectedServiceJobs.filter((j) => j.status === "ปิดงาน").length} งาน
+                </p>
               </div>
               <div className="bg-white rounded-3xl border border-gray-200 p-5">
                 <p className="text-xs text-gray-400 mb-2">ซื้อซ้ำ / ดีล</p>
                 <p className="text-3xl font-black text-gray-200">—</p>
                 <p className="text-xs text-gray-400 mt-1">เชื่อมข้อมูลจาก SE Deals</p>
               </div>
+            </div>
+
+            {/* Service Timeline */}
+            <div className="bg-white rounded-3xl border border-gray-200 p-6">
+              <h3 className="font-bold text-gray-900">Customer Service Timeline</h3>
+              <p className="text-xs text-gray-500 mt-1">รับเข้า {"->"} ดำเนินงาน {"->"} ส่งคืนลูกค้า (อิงข้อมูล Service Jobs)</p>
+              {serviceTimeline.length === 0 ? (
+                <p className="text-sm text-gray-400 mt-4">ยังไม่มีประวัติงาน Service ของลูกค้ารายนี้</p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {serviceTimeline.map((t) => (
+                    <div key={t.id} className="rounded-2xl border border-gray-100 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-gray-900">{t.job_no}</p>
+                        <span className={`text-xs px-2 py-1 rounded-full ${t.isReturned ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                          {t.isReturned ? "ส่งคืนแล้ว" : "กำลังดำเนินงาน"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">{t.equipment}</p>
+                      <div className="mt-2 text-xs text-gray-600 grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <p>รับเข้า: <span className="font-semibold text-gray-800">{formatTimelineInstant(t.startAt)}</span></p>
+                        <p>สถานะล่าสุด: <span className="font-semibold text-gray-800">{t.status}</span></p>
+                        <p>ส่งคืน/ปิดงาน: <span className="font-semibold text-gray-800">{formatTimelineInstant(t.endAt)}</span></p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Equipment Registry */}
+            <div className="bg-white rounded-3xl border border-gray-200 p-6">
+              <h3 className="font-bold text-gray-900">Customer Equipment Registry</h3>
+              <p className="text-xs text-gray-500 mt-1">รายการเครื่องของลูกค้ารายนี้จาก Stock (ขายแล้ว) + Service history</p>
+              {selectedEquipmentRegistry.length === 0 ? (
+                <p className="text-sm text-gray-400 mt-4">ยังไม่พบข้อมูลเครื่องของลูกค้ารายนี้</p>
+              ) : (
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full min-w-[880px] text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b border-gray-100">
+                        <th className="py-2 pr-3 font-semibold">Model</th>
+                        <th className="py-2 pr-3 font-semibold">Manufacturer</th>
+                        <th className="py-2 pr-3 font-semibold">SN</th>
+                        <th className="py-2 pr-3 font-semibold">Source</th>
+                        <th className="py-2 pr-3 font-semibold">สถานะล่าสุด</th>
+                        <th className="py-2 pr-3 font-semibold">Last Cal</th>
+                        <th className="py-2 pr-3 font-semibold">Due</th>
+                        <th className="py-2 pr-3 font-semibold">Lifecycle</th>
+                        <th className="py-2 pr-0 font-semibold">จำนวนงาน</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedEquipmentRegistry.map((eq) => (
+                        <tr key={eq.key} className="border-b border-gray-50">
+                          <td className="py-2 pr-3 font-semibold text-gray-900">{eq.model}</td>
+                          <td className="py-2 pr-3 text-gray-700">{eq.manufacturer}</td>
+                          <td className="py-2 pr-3 font-mono text-blue-700">{eq.serial}</td>
+                          <td className="py-2 pr-3">
+                            <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                              eq.source === "both"
+                                ? "bg-indigo-100 text-indigo-700"
+                                : eq.source === "stock"
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : "bg-amber-100 text-amber-700"
+                            }`}>
+                              {eq.source === "both" ? "Stock + Service" : eq.source === "stock" ? "Stock" : "Service"}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-3 text-gray-700">{eq.lastStatus || "—"}</td>
+                          <td className="py-2 pr-3 text-[11px] text-gray-700 leading-tight">
+                            {eq.lastCalibrationDate ? formatThDateFromYMD(eq.lastCalibrationDate) : "—"}
+                          </td>
+                          <td className="py-2 pr-3 text-[11px] text-gray-700 leading-tight">
+                            {eq.dueDate ? formatThDateFromYMD(eq.dueDate) : "—"}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <span className={`px-2 py-1 rounded-full text-xs font-semibold ${eq.lifecycle === "retired" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                              {eq.lifecycle === "retired" ? "Retired" : "Active"}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-0 text-gray-700">{eq.jobsCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         ) : (

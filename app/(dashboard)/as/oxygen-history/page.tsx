@@ -1,15 +1,17 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import { Droplets, Search } from "lucide-react"
 import {
+  AS_STORE_KEYS,
   readOxygenSensorHistory,
   type ASOxygenSensorHistoryEntry,
 } from "@/lib/mock/as-store"
 import { formatThDateTime } from "@/lib/format-th-datetime"
 
-export default function ASOxygenHistoryPage() {
+function ASOxygenHistoryContent() {
   const searchParams = useSearchParams()
   const initialQ = searchParams.get("q") || ""
   const [items, setItems] = useState<ASOxygenSensorHistoryEntry[]>([])
@@ -19,11 +21,20 @@ export default function ASOxygenHistoryPage() {
   useEffect(() => {
     const sync = () => setItems(readOxygenSensorHistory([]))
     sync()
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key && ev.key !== AS_STORE_KEYS.oxygenSensorHistory) return
+      sync()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key && key !== AS_STORE_KEYS.oxygenSensorHistory) return
+      sync()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
 
@@ -35,10 +46,13 @@ export default function ASOxygenHistoryPage() {
       if (!modeOk) return false
       if (!q) return true
       return (
+        i.job_id.toLowerCase().includes(q) ||
         i.job_no.toLowerCase().includes(q) ||
         i.serial_number.toLowerCase().includes(q) ||
         i.model.toLowerCase().includes(q) ||
-        i.note.toLowerCase().includes(q)
+        i.note.toLowerCase().includes(q) ||
+        (i.oxygen_sensor_serial || "").toLowerCase().includes(q) ||
+        (i.stock_item_id || "").toLowerCase().includes(q)
       )
     })
   }, [items, query, mode])
@@ -67,7 +81,7 @@ export default function ASOxygenHistoryPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="ค้นหา Job / SN / Model / Note"
+              placeholder="ค้นหา Job / job_id / SN เครื่อง / O₂ SN / Stock id / Note"
               className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
             />
           </div>
@@ -104,10 +118,14 @@ export default function ASOxygenHistoryPage() {
                     <p className="text-sm font-semibold text-gray-900 truncate">
                       {i.model} · SN {i.serial_number}
                     </p>
+                    {i.oxygen_sensor_serial && (
+                      <p className="text-xs font-mono text-indigo-700 mt-0.5">O₂ SN: {i.oxygen_sensor_serial}</p>
+                    )}
                     <p className="text-xs text-gray-600 mt-0.5">{i.note}</p>
-                    {(i.stock_item_name || i.stock_qty_before != null) && (
+                    {(i.stock_item_id || i.stock_item_name || i.stock_qty_before != null) && (
                       <p className="text-[11px] text-gray-500 mt-1">
-                        Stock: {i.stock_item_name || "-"} · {i.stock_qty_before ?? "-"} {"->"} {i.stock_qty_after ?? "-"}
+                        Stock{i.stock_item_id ? ` · ${i.stock_item_id.slice(0, 8)}…` : ""}: {i.stock_item_name || "—"} ·{" "}
+                        {i.stock_qty_before ?? "—"} {"->"} {i.stock_qty_after ?? "—"}
                       </p>
                     )}
                   </div>
@@ -129,6 +147,14 @@ export default function ASOxygenHistoryPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function ASOxygenHistoryPage() {
+  return (
+    <Suspense fallback={<div className="p-1 text-sm text-gray-500">Loading oxygen history...</div>}>
+      <ASOxygenHistoryContent />
+    </Suspense>
   )
 }
 

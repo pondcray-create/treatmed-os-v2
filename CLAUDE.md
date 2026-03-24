@@ -5,6 +5,12 @@ TreatMed OS V2 — CRM + After Service + Sales system for medical equipment dist
 Stack: Next.js 15, React 19, TypeScript, Tailwind CSS, Supabase (not yet connected), shadcn/ui.
 Working directory: `C:\Users\POND\OneDrive\เดสก์ท็อป\Treatmed-os-v2`
 
+## Session Bootstrap (Mandatory)
+- At the start of every Cursor session, read:
+  - `ARCHITECTURE.md`
+  - `BUG_LOG.md`
+- For any persistence/state change, follow architecture guardrails and check related bug history first.
+
 ## Dev Mode
 Supabase is NOT connected. `.env.local` has placeholder values.
 Middleware bypasses auth when `NEXT_PUBLIC_SUPABASE_URL === "your-supabase-url"`.
