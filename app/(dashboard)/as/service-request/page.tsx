@@ -1062,7 +1062,11 @@ function FromRepairCalTab({
 export default function ServiceRequestPage() {
   const { profile } = useAuth()
   const actorRole: JobActorRole =
-    profile?.role === "admin" ? "supervisor" : profile?.role === "as_staff" ? "service_engineer" : "stock_admin"
+    profile?.role === "admin"
+      ? "supervisor"
+      : profile?.role === "as_service" || profile?.role === "as_staff"
+        ? "service_engineer"
+        : "stock_admin"
   const fsm = useJobStateMachine(actorRole)
   const searchParams = useSearchParams()
   const [jobs, setJobs] = useState<ServiceJob[]>([])
@@ -1091,7 +1095,7 @@ export default function ServiceRequestPage() {
   const [partsReqPartName, setPartsReqPartName] = useState("")
   const [partsReqQty, setPartsReqQty] = useState(1)
   const [partsReqNote, setPartsReqNote] = useState("")
-  const [myQueueOnly, setMyQueueOnly] = useState<boolean>(profile?.role === "as_staff")
+  const [myQueueOnly, setMyQueueOnly] = useState<boolean>(profile?.role === "as_service" || profile?.role === "as_staff")
   const [equipmentHistory, setEquipmentHistory] = useState<ASEquipmentHistoryEntry[]>([])
   const [partsRequests, setPartsRequests] = useState<ASPartsRequest[]>([])
   const [offlineQueuedCount, setOfflineQueuedCount] = useState(0)
@@ -1199,7 +1203,7 @@ export default function ServiceRequestPage() {
   }, [])
 
   useEffect(() => {
-    if (profile?.role === "as_staff") setMyQueueOnly(true)
+    if (profile?.role === "as_service" || profile?.role === "as_staff") setMyQueueOnly(true)
   }, [profile?.role])
 
   function applyOfflineQueueNow() {
@@ -2587,7 +2591,16 @@ export default function ServiceRequestPage() {
               </div>
 
               {/* Quotation */}
-              {!isCommissioningTestJob(sel) && STATUS_FLOW.indexOf(sel.status) >= STATUS_FLOW.indexOf("รอ Quotation Approve") && (
+              {!isCommissioningTestJob(sel) &&
+                (statusFlow.indexOf(sel.status) >= Math.max(0, statusFlow.indexOf("รอ Quotation Approve")) ||
+                  sel.status === "รอ Quotation Approve" ||
+                  sel.status === "รอ PO" ||
+                  sel.status === "ในคิว" ||
+                  sel.status === "กำลังซ่อม" ||
+                  sel.status === "รออะไหล่" ||
+                  sel.status === "QC" ||
+                  sel.status === "รอส่งคืน" ||
+                  sel.status === "ปิดงาน") && (
                 <div className="glass-card rounded-3xl p-6 space-y-3">
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">Quotation</p>
                   <div className="flex items-center gap-3">

@@ -56,7 +56,7 @@ export async function middleware(request: NextRequest) {
       .eq("id", user.id)
       .single();
 
-    const role = (profile?.role ?? "as_staff") as UserRole;
+    const role = (profile?.role ?? "as_service") as UserRole;
     return NextResponse.redirect(
       new URL(getDefaultRedirect(role), request.url)
     );
@@ -70,7 +70,7 @@ export async function middleware(request: NextRequest) {
       .eq("id", user.id)
       .single();
 
-    const role = (profile?.role ?? "as_staff") as UserRole;
+    const role = (profile?.role ?? "as_service") as UserRole;
 
     if (!canAccess(role, pathname)) {
       return NextResponse.redirect(

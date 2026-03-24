@@ -1,31 +1,37 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Plus, Save, Settings2, Trash2 } from "lucide-react"
+import { AlertTriangle, Plus, Save, Settings2, Trash2 } from "lucide-react"
 import {
   AS_STORE_KEYS,
   DEFAULT_AS_DROPDOWN_CONFIG,
+  DEFAULT_KPI_SETTINGS,
   DEFAULT_AS_WORKFLOW_SETTINGS,
   DEFAULT_GLOBAL_SETTINGS,
   DEFAULT_PRODUCT_CATALOG,
   DEFAULT_SE_SETTINGS,
   readDropdownConfig,
   readASWorkflowSettings,
+  readKPISettings,
   readGlobalSettings,
   readProductCatalog,
   readSESettings,
   writeDropdownConfig,
   writeASWorkflowSettings,
+  writeKPISettings,
   writeGlobalSettings,
   writeProductCatalog,
   writeSESettings,
   type ASDropdownConfig,
   type ASWorkflowSettings,
+  type KPISettingEntry,
+  type KPISettings,
   type GlobalSettings,
   type ProductCatalogGroup,
   type SESettings,
 } from "@/lib/mock/as-store"
 import { useSearchParams } from "next/navigation"
+import { useAuth } from "@/hooks/useAuth"
 
 type SettingsTab = "global" | "as" | "se"
 
@@ -35,7 +41,48 @@ function normalizeUnique(values: string[]) {
   return Array.from(new Set(cleaned))
 }
 
+function validateServiceStatuses(statuses: string[]) {
+  const errors: string[] = []
+  const warnings: string[] = []
+  const required = ["รอประเมิน", "ในคิว", "กำลังซ่อม", "รออะไหล่", "ปิดงาน", "ยกเลิก"]
+  const canonical = [
+    "รอประเมิน",
+    "กำลังประเมิน",
+    "รอ Quotation Approve",
+    "รอ PO",
+    "ในคิว",
+    "กำลังซ่อม",
+    "รออะไหล่",
+    "QC",
+    "รอส่งคืน",
+    "ปิดงาน",
+    "ยกเลิก",
+  ]
+  required.forEach((s) => {
+    if (!statuses.includes(s)) errors.push(`ขาดสถานะจำเป็น: ${s}`)
+  })
+  const mustBeAfter: Array<[string, string]> = [
+    ["ในคิว", "รอประเมิน"],
+    ["กำลังซ่อม", "ในคิว"],
+    ["รออะไหล่", "กำลังซ่อม"],
+    ["ปิดงาน", "กำลังซ่อม"],
+    ["ยกเลิก", "ปิดงาน"],
+  ]
+  mustBeAfter.forEach(([after, before]) => {
+    const ia = statuses.indexOf(after)
+    const ib = statuses.indexOf(before)
+    if (ia >= 0 && ib >= 0 && ia <= ib) {
+      errors.push(`ลำดับไม่ถูกต้อง: ${after} ต้องอยู่หลัง ${before}`)
+    }
+  })
+  statuses.forEach((s) => {
+    if (!canonical.includes(s)) warnings.push(`สถานะ custom: ${s} (ตรวจให้แน่ใจว่า flow และรายงานรองรับ)`)
+  })
+  return { errors, warnings }
+}
+
 export default function SettingsPage() {
+  const { profile } = useAuth()
   const searchParams = useSearchParams()
   const initialTab = (searchParams.get("tab") as SettingsTab) || "global"
   const [tab, setTab] = useState<SettingsTab>(initialTab)
@@ -43,6 +90,7 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<ASDropdownConfig>(readDropdownConfig())
   const [asWorkflow, setASWorkflow] = useState<ASWorkflowSettings>(readASWorkflowSettings())
   const [globalSettings, setGlobalSettings] = useState<GlobalSettings>(readGlobalSettings())
+  const [kpiSettings, setKPISettings] = useState<KPISettings>(readKPISettings())
   const [seSettings, setSESettings] = useState<SESettings>(readSESettings())
   const [productCatalog, setProductCatalog] = useState<ProductCatalogGroup[]>(readProductCatalog())
   const [selectedCatalogCode, setSelectedCatalogCode] = useState<string>("")
@@ -57,8 +105,17 @@ export default function SettingsPage() {
     product_label: "",
     product_manufacturer: "",
     product_model: "",
+    kpi_module: "sales" as KPISettingEntry["module"],
+    kpi_name: "",
+    kpi_formula: "",
+    kpi_target: "",
+    kpi_reset_cycle: "monthly" as KPISettingEntry["reset_cycle"],
   })
   const [savedKey, setSavedKey] = useState<"as" | "se" | "global" | null>(null)
+  const serviceStatusChecks = useMemo(
+    () => validateServiceStatuses(asWorkflow.service_statuses),
+    [asWorkflow.service_statuses],
+  )
 
   useEffect(() => {
     const qp = (searchParams.get("tab") as SettingsTab) || "global"
@@ -136,10 +193,15 @@ export default function SettingsPage() {
 
   function resetGlobalDefaults() {
     setGlobalSettings(DEFAULT_GLOBAL_SETTINGS)
+    setKPISettings(DEFAULT_KPI_SETTINGS)
     setProductCatalog(DEFAULT_PRODUCT_CATALOG)
   }
 
   function saveAS() {
+    if (serviceStatusChecks.errors.length > 0) {
+      window.alert(`ยังบันทึกไม่ได้:\n- ${serviceStatusChecks.errors.join("\n- ")}`)
+      return
+    }
     writeDropdownConfig({
       stock_models: normalizeUnique(config.stock_models),
       stock_manufacturers: normalizeUnique(config.stock_manufacturers),
@@ -167,8 +229,36 @@ export default function SettingsPage() {
       default_currency: globalSettings.default_currency.trim() || DEFAULT_GLOBAL_SETTINGS.default_currency,
     })
     writeProductCatalog(productCatalog)
+    writeKPISettings(kpiSettings)
     setSavedKey("global")
     window.setTimeout(() => setSavedKey(null), 2000)
+  }
+
+  function addKPIEntry() {
+    const kpi_name = draft.kpi_name.trim()
+    const formula = draft.kpi_formula.trim()
+    const target = draft.kpi_target.trim()
+    if (!kpi_name || !formula || !target) return
+    const id = `kpi-${Date.now()}`
+    const entry: KPISettingEntry = {
+      id,
+      module: draft.kpi_module,
+      kpi_name,
+      formula,
+      target,
+      reset_cycle: draft.kpi_reset_cycle,
+    }
+    setKPISettings((prev) => ({ ...prev, items: [...prev.items, entry] }))
+    setDraft((prev) => ({
+      ...prev,
+      kpi_name: "",
+      kpi_formula: "",
+      kpi_target: "",
+    }))
+  }
+
+  function removeKPIEntry(id: string) {
+    setKPISettings((prev) => ({ ...prev, items: prev.items.filter((i) => i.id !== id) }))
   }
 
   function clearAllAppData() {
@@ -244,6 +334,11 @@ export default function SettingsPage() {
 
   return (
     <div className="h-full p-1">
+      {profile?.role !== "admin" && (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          หน้านี้สำหรับ Admin เท่านั้น (การตั้งค่า workflow/KPI/system)
+        </div>
+      )}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
@@ -282,14 +377,16 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={resetGlobalDefaults}
-              className="px-3 py-2 rounded-xl border border-gray-200 text-sm font-semibold hover:bg-gray-50"
+              disabled={profile?.role !== "admin"}
+              className="px-3 py-2 rounded-xl border border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 text-sm font-semibold hover:bg-gray-50"
             >
               Reset Global Defaults
             </button>
             <button
               type="button"
               onClick={saveGlobal}
-              className="px-4 py-2 rounded-xl bg-blue-500 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
+              disabled={profile?.role !== "admin"}
+              className="px-4 py-2 rounded-xl bg-blue-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
             >
               <Save className="h-4 w-4" />
               Save Global Settings
@@ -319,6 +416,94 @@ export default function SettingsPage() {
                 onChange={(e) => setGlobalSettings((prev) => ({ ...prev, default_currency: e.target.value }))}
                 className={inputClass}
               />
+            </div>
+          </div>
+
+          <div className="mt-6 pt-5 border-t border-gray-100">
+            <p className="font-bold text-gray-900 mb-1">KPI Definitions (Admin)</p>
+            <p className="text-xs text-gray-500 mb-3">
+              เพิ่ม/แก้ KPI จากแอพได้โดย Admin เท่านั้น และจะถูกใช้เป็นแหล่งอ้างอิงกลาง
+            </p>
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-2 mb-3">
+              <select
+                value={draft.kpi_module}
+                onChange={(e) => setDraft((prev) => ({ ...prev, kpi_module: e.target.value as KPISettingEntry["module"] }))}
+                className={inputClass}
+                disabled={profile?.role !== "admin"}
+              >
+                <option value="sales">Sales</option>
+                <option value="repair">Repair</option>
+                <option value="calibration">Calibration</option>
+                <option value="stock">Stock</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                value={draft.kpi_name}
+                onChange={(e) => setDraft((prev) => ({ ...prev, kpi_name: e.target.value }))}
+                className={inputClass}
+                placeholder="KPI Name"
+                disabled={profile?.role !== "admin"}
+              />
+              <input
+                value={draft.kpi_formula}
+                onChange={(e) => setDraft((prev) => ({ ...prev, kpi_formula: e.target.value }))}
+                className={inputClass}
+                placeholder="Formula"
+                disabled={profile?.role !== "admin"}
+              />
+              <input
+                value={draft.kpi_target}
+                onChange={(e) => setDraft((prev) => ({ ...prev, kpi_target: e.target.value }))}
+                className={inputClass}
+                placeholder="Target"
+                disabled={profile?.role !== "admin"}
+              />
+              <div className="flex gap-2">
+                <select
+                  value={draft.kpi_reset_cycle}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, kpi_reset_cycle: e.target.value as KPISettingEntry["reset_cycle"] }))}
+                  className={inputClass}
+                  disabled={profile?.role !== "admin"}
+                >
+                  <option value="monthly">monthly</option>
+                  <option value="quarterly">quarterly</option>
+                  <option value="per_deal">per_deal</option>
+                  <option value="per_job">per_job</option>
+                  <option value="per_transaction">per_transaction</option>
+                  <option value="custom">custom</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={addKPIEntry}
+                  disabled={profile?.role !== "admin"}
+                  className="px-3 rounded-xl bg-blue-50 disabled:bg-gray-100 disabled:text-gray-400 text-blue-600 hover:bg-blue-100"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2 max-h-[280px] overflow-auto">
+              {kpiSettings.items.map((k) => (
+                <div key={k.id} className="rounded-xl border border-gray-100 px-3 py-2 bg-white">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-gray-900">
+                      [{k.module}] {k.kpi_name}
+                    </p>
+                    <button
+                      type="button"
+                      aria-label={`ลบ KPI ${k.kpi_name}`}
+                      onClick={() => removeKPIEntry(k.id)}
+                      disabled={profile?.role !== "admin"}
+                      className="p-1.5 rounded-lg text-red-500 disabled:text-gray-300 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-0.5">{k.formula}</p>
+                  <p className="text-[11px] text-gray-500 mt-0.5">Target: {k.target} · Reset: {k.reset_cycle}</p>
+                </div>
+              ))}
+              {kpiSettings.items.length === 0 && <p className="text-xs text-gray-400">No KPI definitions.</p>}
             </div>
           </div>
 
@@ -408,14 +593,16 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={resetSEDefaults}
-              className="px-3 py-2 rounded-xl border border-gray-200 text-sm font-semibold hover:bg-gray-50"
+              disabled={profile?.role !== "admin"}
+              className="px-3 py-2 rounded-xl border border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 text-sm font-semibold hover:bg-gray-50"
             >
               Reset SE Defaults
             </button>
             <button
               type="button"
               onClick={saveSE}
-              className="px-4 py-2 rounded-xl bg-blue-500 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
+              disabled={profile?.role !== "admin"}
+              className="px-4 py-2 rounded-xl bg-blue-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
             >
               <Save className="h-4 w-4" />
               Save SE Settings
@@ -478,14 +665,16 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={resetASDefaults}
-              className="px-3 py-2 rounded-xl border border-gray-200 text-sm font-semibold hover:bg-gray-50"
+              disabled={profile?.role !== "admin"}
+              className="px-3 py-2 rounded-xl border border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 text-sm font-semibold hover:bg-gray-50"
             >
               Reset AS Defaults
             </button>
             <button
               type="button"
               onClick={saveAS}
-              className="px-4 py-2 rounded-xl bg-blue-500 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
+              disabled={profile?.role !== "admin"}
+              className="px-4 py-2 rounded-xl bg-blue-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-blue-600 flex items-center gap-2"
             >
               <Save className="h-4 w-4" />
               Save AS Settings
@@ -567,6 +756,25 @@ export default function SettingsPage() {
                   </button>
                 </div>
               ))}
+            </div>
+            {(serviceStatusChecks.errors.length > 0 || serviceStatusChecks.warnings.length > 0) && (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-bold text-amber-800 flex items-center gap-1">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Workflow validation
+                </p>
+                {serviceStatusChecks.errors.map((e) => (
+                  <p key={`e-${e}`} className="text-[11px] text-rose-700 mt-1">- {e}</p>
+                ))}
+                {serviceStatusChecks.warnings.map((w) => (
+                  <p key={`w-${w}`} className="text-[11px] text-amber-700 mt-1">- {w}</p>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
+              <p className="text-xs font-bold text-blue-800">ถ้าจะเปลี่ยนกระบวนการ Services</p>
+              <p className="text-[11px] text-blue-700 mt-1">1) จัดลำดับสถานะในส่วนนี้ให้ถูกต้องตาม flow จริง</p>
+              <p className="text-[11px] text-blue-700">2) บันทึกและทดสอบเปลี่ยนสถานะในหน้า Service Request</p>
+              <p className="text-[11px] text-blue-700">3) ถ้ามีเงื่อนไขใหม่ (required data/role) ให้เพิ่ม rule ใน FSM</p>
             </div>
           </div>
         </>

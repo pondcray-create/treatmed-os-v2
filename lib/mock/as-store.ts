@@ -311,6 +311,19 @@ export interface GlobalSettings {
   default_currency: string
 }
 
+export interface KPISettingEntry {
+  id: string
+  module: "sales" | "repair" | "calibration" | "stock" | "other"
+  kpi_name: string
+  formula: string
+  target: string
+  reset_cycle: "monthly" | "quarterly" | "per_deal" | "per_job" | "per_transaction" | "custom"
+}
+
+export interface KPISettings {
+  items: KPISettingEntry[]
+}
+
 export interface SESettings {
   se_customers: string[]
   se_owners: string[]
@@ -346,6 +359,7 @@ export const AS_STORE_KEYS = {
   /** Optimistic concurrency for stock snapshot (integer string) */
   stockItemsVersion: "as_stock_items_version",
   globalSettings: "global_settings",
+  kpiSettings: "kpi_settings",
   seSettings: "se_settings",
   productCatalog: "product_catalog",
   moduleAssignments: "as_module_assignments",
@@ -380,6 +394,20 @@ export const DEFAULT_AS_DROPDOWN_CONFIG: ASDropdownConfig = {
 export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   app_name: "TreatMed OS",
   default_currency: "THB",
+}
+
+export const DEFAULT_KPI_SETTINGS: KPISettings = {
+  items: [
+    { id: "kpi-sales-win-rate", module: "sales", kpi_name: "Win Rate", formula: "Closed Won / Total Deals × 100", target: ">= 40%", reset_cycle: "monthly" },
+    { id: "kpi-sales-forecast-accuracy", module: "sales", kpi_name: "Forecast Accuracy", formula: "Actual Revenue / Forecasted × 100", target: ">= 85%", reset_cycle: "monthly" },
+    { id: "kpi-sales-deal-cycle-time", module: "sales", kpi_name: "Deal Cycle Time", formula: "Closed Date - Start Date (days)", target: "<= 90 days", reset_cycle: "per_deal" },
+    { id: "kpi-repair-tat", module: "repair", kpi_name: "TAT", formula: "วันที่เสร็จ - วันที่รับเครื่อง", target: "<= 14 วัน", reset_cycle: "per_job" },
+    { id: "kpi-repair-first-time-fix-rate", module: "repair", kpi_name: "First-time Fix Rate", formula: "แก้สำเร็จครั้งเดียว / ทั้งหมด × 100", target: ">= 80%", reset_cycle: "monthly" },
+    { id: "kpi-calibration-on-time-cal-rate", module: "calibration", kpi_name: "On-time Cal Rate", formula: "ส่ง cert ตรงเวลา / ทั้งหมด × 100", target: ">= 95%", reset_cycle: "monthly" },
+    { id: "kpi-calibration-proactive-conversion", module: "calibration", kpi_name: "Proactive Cal Conversion", formula: "เครื่องที่แจ้งเตือนแล้ว cal จริง / ทั้งหมด × 100", target: ">= 60%", reset_cycle: "quarterly" },
+    { id: "kpi-stock-inventory-accuracy", module: "stock", kpi_name: "Inventory Accuracy", formula: "รายการที่ตรงจริง / ทั้งหมด × 100", target: ">= 98%", reset_cycle: "monthly" },
+    { id: "kpi-stock-avg-receiving-time", module: "stock", kpi_name: "Avg. Receiving Time", formula: "เวลาเฉลี่ยรับเครื่องเข้าระบบ (ชม.)", target: "<= 4 ชม.", reset_cycle: "per_transaction" },
+  ],
 }
 
 export const DEFAULT_SE_SETTINGS: SESettings = {
@@ -807,6 +835,14 @@ export function readGlobalSettings(fallback: GlobalSettings = DEFAULT_GLOBAL_SET
 
 export function writeGlobalSettings(value: GlobalSettings) {
   writeStore(KEYS.globalSettings, value)
+}
+
+export function readKPISettings(fallback: KPISettings = DEFAULT_KPI_SETTINGS) {
+  return readStore<KPISettings>(KEYS.kpiSettings, fallback)
+}
+
+export function writeKPISettings(value: KPISettings) {
+  writeStore(KEYS.kpiSettings, value)
 }
 
 export function readSESettings(fallback: SESettings = DEFAULT_SE_SETTINGS) {

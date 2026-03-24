@@ -24,6 +24,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import type { UserRole } from "@/types/database";
+import { canAccess } from "@/lib/auth/roles";
 
 type NavItem = {
   label: string;
@@ -42,7 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "TreatMed AS",
     color: "text-emerald-600",
-    roles: ["admin", "as_staff"],
+    roles: ["admin", "as_staff", "as_service", "as_stock", "se_staff"],
     items: [
       { label: "Customer Register", href: "/as/customers", icon: <Users size={16} /> },
       { label: "Stock In/Out", href: "/as/stock", icon: <Package size={16} /> },
@@ -73,7 +74,7 @@ export function Sidebar() {
   const { profile, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  const role = profile?.role ?? "as_staff";
+  const role = profile?.role ?? "as_service";
 
   const toggleGroup = (label: string) => {
     setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
@@ -113,8 +114,10 @@ export function Sidebar() {
         </Link>
         <Link
           href="/settings"
+          aria-disabled={role !== "admin"}
           className={cn(
             "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+            role !== "admin" && "opacity-40 pointer-events-none",
             pathname === "/settings" || pathname === "/as/settings"
               ? "bg-sky-50 text-sky-600"
               : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
@@ -148,7 +151,7 @@ export function Sidebar() {
                   id={`nav-group-${group.label.replace(/\s+/g, "-").toLowerCase()}`}
                   className="mt-1 space-y-0.5"
                 >
-                  {group.items.map((item) => (
+                  {group.items.filter((item) => canAccess(role, item.href)).map((item) => (
                     <Link
                       key={item.href}
                       href={item.href}

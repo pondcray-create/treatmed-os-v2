@@ -1,4 +1,4 @@
-export type UserRole = "admin" | "as_staff" | "se_staff";
+export type UserRole = "admin" | "as_staff" | "as_service" | "as_stock" | "se_staff";
 
 export type Database = {
   public: {
