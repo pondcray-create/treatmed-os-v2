@@ -48,6 +48,7 @@ import {
 import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/format-th-datetime"
 import { newId } from "@/lib/new-id"
 import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
+import { getStockPatternManufacturers, getStockPatternModelsForManufacturer } from "@/lib/product-catalog-options"
 
 type StockCategory = "spare_part" | "module" | "sellable" | "consumable" | "tool" | "demo"
 type ItemStatus = "in_stock" | "reserved" | "on_loan" | "sold" | "pending_qc"
@@ -112,7 +113,7 @@ interface StockTransaction {
   companion_serial?: string
   /** มาจาก Input Product เท่านั้น — ใช้ลง Calibration Proactive */
   input_product_receive?: boolean
-  /** วันที่ Cal ล่าสุดของเครื่องตอนรับเข้า — ถ้าว่างใช้วันรับเข้าแทน */
+  /** วันที่ Cal ล่าสุดจริงของเครื่องตอนรับเข้า (ถ้ามี) */
   equipment_calibration_date?: string
 }
 
@@ -1381,6 +1382,7 @@ function ReceiveProductDialog({
   const [newSerial, setNewSerial] = useState("")
   const [moduleSerials, setModuleSerials] = useState<string[]>([])
   const [companionSerial, setCompanionSerial] = useState("")
+  const [receiveDate, setReceiveDate] = useState(todayISO)
   const [equipmentCalDate, setEquipmentCalDate] = useState("")
   const [sendCommissioning, setSendCommissioning] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -1429,39 +1431,13 @@ function ReceiveProductDialog({
     setCompanionSerial("")
   }, [selectedCatalogModel])
 
-  const manufacturersSorted = useMemo(() => {
-    const u = new Set<string>()
-    for (const g of productCatalog) {
-      const m = g.manufacturer.trim()
-      if (m) u.add(m)
-    }
-    for (const m of asDropdown.stock_manufacturers) {
-      const t = m.trim()
-      if (t) u.add(t)
-    }
-    return [...u].sort((a, b) => a.localeCompare(b, "th"))
-  }, [productCatalog, asDropdown.stock_manufacturers])
+  const manufacturersSorted = useMemo(
+    () => getStockPatternManufacturers(productCatalog, asDropdown),
+    [productCatalog, asDropdown],
+  )
 
   const catalogModelsForManufacturer = useMemo(() => {
-    if (!selectedManufacturer) return []
-    const acc = new Set<string>()
-    let catalogHit = false
-    for (const g of productCatalog) {
-      if (g.manufacturer === selectedManufacturer) {
-        catalogHit = true
-        for (const m of g.models) {
-          const t = m.trim()
-          if (t) acc.add(t)
-        }
-      }
-    }
-    if (!catalogHit || acc.size === 0) {
-      for (const m of asDropdown.stock_models) {
-        const t = m.trim()
-        if (t) acc.add(t)
-      }
-    }
-    return [...acc].sort((a, b) => a.localeCompare(b, "th"))
+    return getStockPatternModelsForManufacturer(selectedManufacturer, productCatalog, asDropdown)
   }, [productCatalog, asDropdown.stock_models, selectedManufacturer])
 
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white"
@@ -1538,9 +1514,14 @@ function ReceiveProductDialog({
       return
     }
 
+    const receiveTrim = receiveDate.trim() || todayISO
+    if (parseISODateToUTC(receiveTrim) > parseISODateToUTC(todayISO)) {
+      setSubmitError("วันที่รับเข้าห้ามเป็นอนาคต")
+      return
+    }
     const calTrim = equipmentCalDate.trim()
-    if (calTrim && parseISODateToUTC(calTrim) > parseISODateToUTC(todayISO)) {
-      setSubmitError("วันที่ Cal ล่าสุดต้องไม่หลังวันรับเข้า (วันนี้)")
+    if (calTrim && parseISODateToUTC(calTrim) > parseISODateToUTC(receiveTrim)) {
+      setSubmitError("Last Cal Date ต้องไม่หลังวันที่รับเข้า")
       return
     }
     const qtyNormalized = Math.floor(Number(qtyIn))
@@ -1558,7 +1539,7 @@ function ReceiveProductDialog({
       qty: Math.max(1, qtyNormalized),
       reference: supplierPo.trim(),
       note: sendCommissioning ? [note.trim(), "ส่ง Commissioning Test หลังรับเข้า"].filter(Boolean).join(" · ") : note.trim() || undefined,
-      date: todayISO,
+      date: receiveTrim,
       approved_by: "Stock",
       shelf_location: shelf.trim() || undefined,
       manufacturer: selectedManufacturer,
@@ -1569,7 +1550,7 @@ function ReceiveProductDialog({
       category: newCategory,
       set_status: sendCommissioning ? "pending_qc" : "in_stock",
       input_product_receive: true,
-      equipment_calibration_date: equipmentCalDate.trim() || todayISO,
+      equipment_calibration_date: calTrim || undefined,
     }
     onApply(tx)
     onClose()
@@ -1598,7 +1579,7 @@ function ReceiveProductDialog({
             ยี่ห้อ/รุ่น sync จาก Settings → <strong>Global · Product Catalog</strong> (หลัก) และ AS · Stock Manufacturers/Models
             (เสริมเมื่อ Catalog ยังไม่มีรุ่นสำหรับยี่ห้อนั้น) · รุ่นที่มี Module ต้องกรอก SN ครบ · กรอก PO รับเข้า ·
             ติ๊ก Commissioning ด้านล่าง (ไม่ต้องกรอกอะไรเพิ่ม) เพื่อส่งเข้าคิว Services · ทุก SN ที่กรอกจะลง{" "}
-            <strong>Calibration Proactive</strong> อัตโนมัติ — due = วันที่ Cal ที่กรอก + 1 ปี (ถ้าไม่กรอก Cal ใช้วันรับเข้าแทน)
+            <strong>Calibration Proactive</strong> อัตโนมัติ — due = Last Cal Date + 1 ปี (ถ้าไม่กรอก Last Cal จะใช้วันรับเข้าแทน)
           </p>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">ยี่ห้อ (ผู้ผลิต) *</label>
@@ -1717,16 +1698,31 @@ function ReceiveProductDialog({
               )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">วันที่สอบเทียบล่าสุดของเครื่อง (Cal date)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">วันที่รับเข้า (Receive Date)</label>
             <input
               type="date"
-              value={equipmentCalDate}
-              onChange={(e) => setEquipmentCalDate(e.target.value)}
+              required
+              value={receiveDate}
+              onChange={(e) => setReceiveDate(e.target.value)}
               max={todayISO}
               className={inp}
             />
             <p className="text-[11px] text-gray-500 mt-1">
-              ถ้าไม่กรอก ระบบจะใช้วันรับเข้าเป็น Last Calibration และคำนวณ Next Due อัตโนมัติ (+1 year)
+              ค่าเริ่มต้นเป็นวันนี้ แต่สามารถระบุย้อนหลังเป็นวันที่รับของจริงได้
+            </p>
+            <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">{thDateInputBeHint(receiveDate)}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">วันที่สอบเทียบล่าสุดจริง (Last Cal Date)</label>
+            <input
+              type="date"
+              value={equipmentCalDate}
+              onChange={(e) => setEquipmentCalDate(e.target.value)}
+              max={receiveDate || todayISO}
+              className={inp}
+            />
+            <p className="text-[11px] text-gray-500 mt-1">
+              ถ้าไม่กรอก ระบบจะใช้วันที่รับเข้าเป็น Last Calibration และคำนวณ Next Due อัตโนมัติ (+1 year)
             </p>
             <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">{thDateInputBeHint(equipmentCalDate)}</p>
           </div>
@@ -2149,14 +2145,13 @@ export default function StockPage() {
       setPendingStockReturns(
         jobs.filter(
           (j) =>
-            j.source === "stock" &&
             j.status === "ปิดงาน" &&
             j.stock_return_pending,
         ),
       )
       setDispatchAcceptedHistory(readStockDispatchHistory([]))
       setOutboundTraceLog(readStockOutboundTraceLog([]))
-      setCompletedStockReturns(jobs.filter((j) => j.source === "stock" && j.stock_return_received_at))
+      setCompletedStockReturns(jobs.filter((j) => j.stock_return_received_at))
       setPendingInServiceInbox(dispatches.length)
       setLoanReturnHistory(readLoanReturnHistory([]))
       setModuleAssignments(readModuleAssignments([]))

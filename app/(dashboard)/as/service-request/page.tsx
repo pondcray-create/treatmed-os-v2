@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users, ClipboardCheck, Package } from "lucide-react"
+import { Search, Plus, ChevronRight, X, Wrench, FlaskConical, Clock, CheckCircle2, Copy, Check, Building2, User, Hash, FileText, Trash2, Bell, Inbox, Users, ClipboardCheck, Package, Send } from "lucide-react"
 import {
   AS_STORE_KEYS,
   readProactiveCalibrationAssets,
@@ -11,6 +11,7 @@ import {
   appendPartsRequest,
   appendStockNotification,
   appendEquipmentHistory,
+  appendStockDispatch,
   readEquipmentHistory,
   readIncomingSERequests,
   readJobs,
@@ -18,6 +19,7 @@ import {
   readPartsRequests,
   readRepairToCalRequests,
   readOrganizations,
+  readDropdownConfig,
   readStockDispatches,
   appendStockDispatchHistory,
   appendRepairToCalRequest,
@@ -357,7 +359,6 @@ const MOCK_SE_REQUESTS: SERequest[] = [
 ]
 
 const LABS = ["สถาบันมาตรวิทยาแห่งชาติ (NIMT)","สถาบันเทคโนโลยีไทย-ญี่ปุ่น (TNI)","มจธ. ศูนย์บริการวิทยาศาสตร์","อื่นๆ"]
-const MANUFACTURERS = ["Fluke Biomedical","RaySafe","Fluke General","IMT Analytics","Omega","Testo","Other"]
 
 // ── Pill ────────────────────────────────────────────────────────────────────
 function Pill({ label, color }: { label: string; color: string }) {
@@ -389,339 +390,6 @@ function JobCard({ job, selected, onClick }: { job: ServiceJob; selected: boolea
         </span>
       </div>
     </button>
-  )
-}
-
-// ── Org Select Component ──────────────────────────────────────────────────────
-function OrgSelect({
-  value,
-  onChange,
-  required,
-  className,
-  orgNames,
-  id,
-}: {
-  value: string
-  onChange: (v: string) => void
-  required?: boolean
-  className?: string
-  orgNames: string[]
-  id?: string
-}) {
-  const [custom, setCustom] = useState(!orgNames.includes(value) && value !== "")
-  useEffect(() => {
-    setCustom(!orgNames.includes(value) && value !== "")
-  }, [orgNames, value])
-  return (
-    <div className="space-y-2">
-      <select
-        id={id}
-        value={custom ? "__custom__" : value}
-        onChange={e => {
-          if (e.target.value === "__custom__") { setCustom(true); onChange("") }
-          else { setCustom(false); onChange(e.target.value) }
-        }}
-        className={className}
-        required={!!required && !custom}
-      >
-        <option value="">-- เลือกหน่วยงาน --</option>
-        {orgNames.map(o => <option key={o} value={o}>{o}</option>)}
-        <option value="__custom__">+ พิมพ์เอง...</option>
-      </select>
-      {custom && (
-        <input
-          id={id ? `${id}-custom` : undefined}
-          required={required}
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder="พิมพ์ชื่อหน่วยงาน"
-          className={className}
-        />
-      )}
-    </div>
-  )
-}
-
-// ── New Job Dialog ────────────────────────────────────────────────────────────
-function NewJobDialog({
-  onClose,
-  onSave,
-  orgNames,
-  existingJobs,
-  onOpenExistingJob,
-}: {
-  onClose: () => void
-  onSave: (j: ServiceJob) => void
-  orgNames: string[]
-  existingJobs: ServiceJob[]
-  onOpenExistingJob: (j: ServiceJob) => void
-}) {
-  const [form, setForm] = useState({
-    job_type: "repair" as JobType,
-    priority: "normal" as Priority,
-    routing: "in_country" as Routing,
-    receive_channel: "ขนส่งเอกชน" as "พนักงาน" | "ขนส่งเอกชน",
-    manufacturer: "Fluke Biomedical",
-    model: "",
-    serial_number: "",
-    received_date: new Date().toISOString().split("T")[0],
-    tracking_in: "",
-    customer_name: "",
-    customer_org: "",
-    symptom_reported: "",
-    rma_code: "",
-    lab_name: "",
-    requires_approval: true,
-  })
-  const [serialTouched, setSerialTouched] = useState(false)
-  const normalizedSerial = form.serial_number.trim().toLowerCase()
-  const sameSerialJobs = useMemo(
-    () =>
-      normalizedSerial
-        ? existingJobs.filter((j) => (j.serial_number || "").trim().toLowerCase() === normalizedSerial)
-        : [],
-    [existingJobs, normalizedSerial],
-  )
-  const latestSameSerialJob = sameSerialJobs[0]
-  const openSameSerialJob = sameSerialJobs.find((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
-
-  function applySerialAutofill() {
-    if (!latestSameSerialJob) return
-    setForm((f) => ({
-      ...f,
-      manufacturer: latestSameSerialJob.manufacturer || f.manufacturer,
-      model: latestSameSerialJob.model || f.model,
-      customer_org: latestSameSerialJob.customer_org || f.customer_org,
-      customer_name: latestSameSerialJob.customer_name || f.customer_name,
-      routing: latestSameSerialJob.routing || f.routing,
-      symptom_reported: f.symptom_reported || latestSameSerialJob.symptom_reported || "",
-    }))
-  }
-
-  function submit(e: React.FormEvent) {
-    e.preventDefault()
-    const serial = form.serial_number.trim()
-    const sameSn = existingJobs.filter((j) => (j.serial_number || "").trim().toLowerCase() === serial.toLowerCase())
-    const duplicatedOpen = sameSn.find((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
-    if (duplicatedOpen) {
-      window.alert(`SN นี้มีงานเปิดอยู่แล้ว (${duplicatedOpen.job_no} · ${duplicatedOpen.status})\nกรุณาเปิดงานเดิมเพื่ออัปเดตต่อ`)
-      return
-    }
-    const sameDayDuplicate = sameSn.find((j) => (j.received_date || "").trim() === form.received_date.trim())
-    if (sameDayDuplicate) {
-      const confirmed = window.confirm(`พบ SN เดียวกันในวันรับเข้าเดียวกัน (${sameDayDuplicate.job_no})\nยืนยันสร้างงานใหม่ต่อหรือไม่?`)
-      if (!confirmed) return
-    }
-    if ((form.job_type === "repair" || form.job_type === "calibration") && form.receive_channel === "ขนส่งเอกชน" && !form.tracking_in.trim()) {
-      window.alert("งาน Repair/Calibration ที่รับจากขนส่งเอกชนต้องระบุ Tracking No.")
-      return
-    }
-    const count = Math.floor(Math.random() * 900) + 100
-    onSave({ id: Date.now().toString(), job_no: `JOB-2024-0${count}`, status: "รอประเมิน", created_at: new Date().toISOString().split("T")[0], ...form, rma_code: form.routing === "overseas" ? form.rma_code : undefined, lab_name: form.job_type === "calibration" && form.routing === "in_country" ? form.lab_name : undefined })
-    onClose()
-  }
-  const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
-  const lbl = "block text-sm font-medium text-gray-700 mb-1.5"
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 sticky top-0 bg-white rounded-t-3xl">
-          <h2 className="font-bold text-lg">สร้างงานใหม่</h2>
-          <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100"><X className="h-4 w-4" /></button>
-        </div>
-        <form onSubmit={submit} className="p-6 space-y-5">
-          {/* Type + Priority */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={lbl}>ประเภทงาน</label>
-              <div className="flex flex-wrap gap-2">
-                {(["repair","preventive_maintenance","calibration","commissioning"] as JobType[]).map(t => (
-                  <button key={t} type="button" onClick={() => setForm(f=>({...f,job_type:t}))}
-                    className={`flex-1 min-w-[100px] py-2.5 rounded-xl text-xs font-semibold border-2 transition-all ${
-                      form.job_type===t
-                        ? t==="repair"
-                          ? "border-blue-500 bg-blue-50 text-blue-700"
-                          : t==="calibration"
-                            ? "border-teal-500 bg-teal-50 text-teal-700"
-                            : "border-amber-500 bg-amber-50 text-amber-800"
-                        : "border-gray-200 text-gray-500"
-                    }`}>
-                    {t==="repair" ? "🔧 Repair" : t==="preventive_maintenance" ? "🛡️ PM" : t==="calibration" ? "📐 Cal" : "✅ Comm. Test"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className={lbl}>Priority</label>
-              <div className="flex gap-2">
-                {([["urgent","เร่งด่วน"],["high","สำคัญ"],["normal","ปกติ"]] as [Priority,string][]).map(([v,l]) => (
-                  <button key={v} type="button" onClick={() => setForm(f=>({...f,priority:v}))}
-                    className={`flex-1 py-2.5 rounded-xl text-xs font-semibold border-2 transition-all ${form.priority===v ? v==="urgent" ? "border-red-400 bg-red-50 text-red-700" : v==="high" ? "border-orange-400 bg-orange-50 text-orange-700" : "border-gray-400 bg-gray-100 text-gray-700" : "border-gray-200 text-gray-400"}`}>
-                    {l}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          {/* Equipment */}
-          <div className="p-4 rounded-2xl bg-gray-50 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">ข้อมูลเครื่อง</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="job-manufacturer" className={lbl}>Manufacturer</label>
-                <select id="job-manufacturer" value={form.manufacturer} onChange={e=>setForm(f=>({...f,manufacturer:e.target.value}))} className={inp}>
-                  {MANUFACTURERS.map(m=><option key={m}>{m}</option>)}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="job-model" className={lbl}>Model *</label>
-                <input id="job-model" required value={form.model} onChange={e=>setForm(f=>({...f,model:e.target.value}))} className={inp} placeholder="เช่น ProSim 8, IDA 6" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="job-serial" className={lbl}>Serial Number *</label>
-                <input
-                  id="job-serial"
-                  required
-                  value={form.serial_number}
-                  onChange={e=> {
-                    setSerialTouched(true)
-                    setForm(f=>({...f,serial_number:e.target.value}))
-                  }}
-                  className={inp}
-                  placeholder="SN ของเครื่อง"
-                />
-              </div>
-              <div>
-                <label htmlFor="job-received-date" className={lbl}>วันที่รับเครื่อง</label>
-                <input id="job-received-date" type="date" value={form.received_date} onChange={e=>setForm(f=>({...f,received_date:e.target.value}))} className={inp} />
-                <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(form.received_date)}</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="job-tracking-in" className={lbl}>Tracking No. (ขาเข้า)</label>
-                <input id="job-tracking-in" value={form.tracking_in} onChange={e=>setForm(f=>({...f,tracking_in:e.target.value}))} className={inp} placeholder="EMS / Kerry tracking" />
-              </div>
-              <div>
-                <label className={lbl}>ช่องทางรับ</label>
-                <div className="flex gap-2 mt-1">
-                  {(["พนักงาน","ขนส่งเอกชน"] as const).map(c=>(
-                    <button key={c} type="button" onClick={()=>setForm(f=>({...f,receive_channel:c}))}
-                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-all ${form.receive_channel===c ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-400"}`}>{c}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            {serialTouched && normalizedSerial && (
-              <div className="rounded-xl border border-blue-100 bg-blue-50 p-3">
-                {sameSerialJobs.length > 0 ? (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-blue-800">
-                      พบประวัติ SN นี้ {sameSerialJobs.length} งาน
-                      {openSameSerialJob ? ` · มีงานเปิดอยู่ (${openSameSerialJob.job_no})` : ""}
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={applySerialAutofill}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-blue-200 text-blue-700 hover:bg-blue-100"
-                      >
-                        เติมข้อมูลจากงานล่าสุด
-                      </button>
-                      {openSameSerialJob && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onOpenExistingJob(openSameSerialJob)
-                            onClose()
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100"
-                        >
-                          เปิดงานเดิม
-                        </button>
-                      )}
-                      {latestSameSerialJob && (
-                        <span className="text-[11px] text-blue-700">
-                          ล่าสุด: {latestSameSerialJob.job_no} · {latestSameSerialJob.customer_org}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-blue-700">SN นี้ยังไม่พบในระบบ (จะสร้างเป็นรายการใหม่)</p>
-                )}
-              </div>
-            )}
-          </div>
-          {/* Routing */}
-          <div className="p-4 rounded-2xl bg-gray-50 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">การส่งซ่อม / สอบเทียบ</p>
-            <div className="flex gap-3">
-              {([["in_country","🇹🇭 ในประเทศ"],["overseas","✈️ ต่างประเทศ"]] as [Routing,string][]).map(([v,l])=>(
-                <button key={v} type="button" onClick={()=>setForm(f=>({...f,routing:v}))}
-                  className={`flex-1 py-2.5 rounded-xl text-sm font-medium border-2 transition-all ${form.routing===v ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-500"}`}>{l}</button>
-              ))}
-            </div>
-            {form.routing==="overseas" && (
-              <div>
-                <label htmlFor="job-rma-code" className={lbl}>RMA Code *</label>
-                <input id="job-rma-code" required value={form.rma_code} onChange={e=>setForm(f=>({...f,rma_code:e.target.value}))} className={inp} placeholder="RMA-FBC-2024-XXX" />
-              </div>
-            )}
-            {form.job_type==="calibration" && form.routing==="in_country" && (
-              <div>
-                <label htmlFor="job-lab-name" className={lbl}>Lab ที่ส่ง</label>
-                <select id="job-lab-name" value={form.lab_name} onChange={e=>setForm(f=>({...f,lab_name:e.target.value}))} className={inp}>
-                  <option value="">-- เลือก Lab --</option>
-                  {LABS.map(l=><option key={l}>{l}</option>)}
-                </select>
-              </div>
-            )}
-          </div>
-          {/* Customer — now uses OrgSelect dropdown */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="job-customer-org" className={lbl}>หน่วยงาน *</label>
-              <OrgSelect
-                id="job-customer-org"
-                value={form.customer_org}
-                onChange={v => setForm(f => ({ ...f, customer_org: v }))}
-                required
-                orgNames={orgNames}
-                className={inp}
-              />
-            </div>
-            <div>
-              <label htmlFor="job-customer-name" className={lbl}>ผู้ติดต่อ</label>
-              <input id="job-customer-name" value={form.customer_name} onChange={e=>setForm(f=>({...f,customer_name:e.target.value}))} className={inp} placeholder="ชื่อผู้ติดต่อ" />
-            </div>
-          </div>
-          {/* Symptom */}
-          <div>
-            <label htmlFor="job-symptom" className={lbl}>อาการที่ลูกค้าแจ้ง *</label>
-            <textarea id="job-symptom" required value={form.symptom_reported} onChange={e=>setForm(f=>({...f,symptom_reported:e.target.value}))} className={`${inp} resize-none`} rows={3} placeholder="อาการเสีย หรือเหตุผลที่ส่งมา" />
-          </div>
-          {/* Approval */}
-          <button type="button" role="switch" aria-checked={form.requires_approval} onClick={()=>setForm(f=>({...f,requires_approval:!f.requires_approval}))}
-            className={`w-full flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${form.requires_approval ? "bg-purple-50 border-purple-300" : "bg-gray-50 border-gray-200"}`}>
-            <div className={`w-10 h-6 shrink-0 rounded-full p-1 flex items-center transition-colors ${form.requires_approval ? "bg-purple-500" : "bg-gray-300"}`}>
-              <span className={`w-4 h-4 rounded-full bg-white shadow transition-transform ${form.requires_approval ? "translate-x-4" : "translate-x-0"}`} />
-            </div>
-            <div className="text-left">
-              <p className={`text-sm font-semibold ${form.requires_approval ? "text-purple-800" : "text-gray-700"}`}>ต้องรอ Approve Quotation</p>
-              <p className={`text-xs ${form.requires_approval ? "text-purple-500" : "text-gray-400"}`}>ปิดเพื่อข้ามขั้นตอนนี้ (กรณีพิเศษ)</p>
-            </div>
-          </button>
-          <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50">ยกเลิก</button>
-            <button type="submit" className="flex-1 py-2.5 rounded-xl bg-blue-500 text-white text-sm font-bold hover:bg-blue-600">สร้างงาน</button>
-          </div>
-        </form>
-      </div>
-    </div>
   )
 }
 
@@ -1047,10 +715,10 @@ function CommissioningWorkTab({
 // ── From SE Tab ────────────────────────────────────────────────────────────────
 function FromSETab({
   requests,
-  onAccept,
+  onRouteToStock,
 }: {
   requests: SERequest[]
-  onAccept: (r: SERequest) => void
+  onRouteToStock: (r: SERequest) => void
 }) {
   if (requests.length === 0) {
     return (
@@ -1062,7 +730,7 @@ function FromSETab({
   }
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-500">คำขอบริการที่ทีม SE (Sales Engineering) ส่งมาให้ฝ่ายบริการ กรุณากด "รับงาน" เพื่อเพิ่มเข้าคิวหลัก</p>
+      <p className="text-sm text-gray-500">คำขอบริการจาก SE ต้องผ่าน Stock ตาม SOP: ส่งเข้า Stock ก่อน แล้ว Service รับงานจากแท็บ "รับงานจาก Stock"</p>
       {requests.map(r => {
         const priorityColor = r.priority === "urgent" ? "bg-red-100 text-red-700" : r.priority === "high" ? "bg-orange-100 text-orange-700" : "bg-gray-100 text-gray-500"
         const priorityLabel = r.priority === "urgent" ? "เร่งด่วน" : r.priority === "high" ? "สำคัญ" : "ปกติ"
@@ -1089,10 +757,10 @@ function FromSETab({
                 ขอโดย <span className="font-semibold text-gray-600">{r.requested_by}</span> · {r.requested_at}
               </div>
               <button
-                onClick={() => onAccept(r)}
+                onClick={() => onRouteToStock(r)}
                 className="flex items-center gap-2 px-4 py-2 bg-violet-500 hover:bg-violet-600 text-white rounded-xl text-sm font-bold transition-colors"
               >
-                <CheckCircle2 className="h-4 w-4" /> รับงาน
+                <Send className="h-4 w-4" /> ส่งเข้า Stock
               </button>
             </div>
           </div>
@@ -1203,7 +871,6 @@ function ServiceRequestPageContent() {
   const [search, setSearch] = useState("")
   const [filterType, setFilterType] = useState<"all"|JobType>("all")
   const [filterStatus, setFilterStatus] = useState("ทั้งหมด")
-  const [showNew, setShowNew] = useState(false)
   const [showQuoteDialog, setShowQuoteDialog] = useState(false)
   const [mainTab, setMainTab] = useState<MainTab>("jobs")
 
@@ -1232,6 +899,7 @@ function ServiceRequestPageContent() {
   const [offlineQueueItems, setOfflineQueueItems] = useState<OfflineMutation[]>([])
   const [transitionError, setTransitionError] = useState<string>("")
   const [vtOxygenStock, setVtOxygenStock] = useState(() => getVTOxygenSensorStockRollup())
+  const [stockDropdownConfig, setStockDropdownConfig] = useState(readDropdownConfig())
 
   useEffect(() => {
     const loadedJobs = readJobs(MOCK_JOBS)
@@ -1260,6 +928,7 @@ function ServiceRequestPageContent() {
     setOrgNames(loadedOrgs.map((o) => o.name))
     setWorkflowSettings(readASWorkflowSettings())
     setVtOxygenStock(getVTOxygenSensorStockRollup())
+    setStockDropdownConfig(readDropdownConfig())
   }, [])
 
   useEffect(() => {
@@ -1283,6 +952,7 @@ function ServiceRequestPageContent() {
       setWorkflowSettings(readASWorkflowSettings())
       setEquipmentHistory(readEquipmentHistory([]))
       setVtOxygenStock(getVTOxygenSensorStockRollup())
+      setStockDropdownConfig(readDropdownConfig())
     }
     const allowedKeys = new Set<string>([
       AS_STORE_KEYS.jobs,
@@ -1295,6 +965,8 @@ function ServiceRequestPageContent() {
       AS_STORE_KEYS.seIncomingRequests,
       AS_STORE_KEYS.asWorkflowSettings,
       AS_STORE_KEYS.equipmentHistory,
+      AS_STORE_KEYS.dropdownConfig,
+      AS_STORE_KEYS.stockItems,
     ])
     const onStorage = (ev: StorageEvent) => {
       if (ev.key && !allowedKeys.has(ev.key)) return
@@ -1751,7 +1423,7 @@ function ServiceRequestPageContent() {
         ...job,
         status: nextStatus,
         fsm_state: nextStatus === "ปิดงาน" ? "COMPLETED" : "IN_PROGRESS",
-        stock_return_pending: nextStatus === "ปิดงาน" && job.source === "stock" ? true : job.stock_return_pending,
+        stock_return_pending: nextStatus === "ปิดงาน" ? true : job.stock_return_pending,
         status_logs: [
           ...(job.status_logs || []),
           {
@@ -1809,7 +1481,7 @@ function ServiceRequestPageContent() {
           : nextStatus === "ยกเลิก"
             ? "ESCALATED"
             : "IN_PROGRESS",
-      stock_return_pending: nextStatus === "ปิดงาน" && job.source === "stock" ? true : job.stock_return_pending,
+      stock_return_pending: nextStatus === "ปิดงาน" ? true : job.stock_return_pending,
       status_logs: [
         ...(job.status_logs || []),
         {
@@ -1830,9 +1502,7 @@ function ServiceRequestPageContent() {
       if ((updated.job_type === "calibration" || updated.job_type === "preventive_maintenance") && updated.status === "ปิดงาน") {
         upsertProactiveFromCalibration(updated)
       }
-      if (nextStatus === "ปิดงาน") {
-        applyVTOxygenSensorEffectsOnCalibrationClose(updated)
-      }
+      if (nextStatus === "ปิดงาน") applyVTOxygenSensorEffectsOnCalibrationClose(updated)
       setJobs(nextJobs)
       setSelected(updated)
       notifyStockJobStatus(job, nextStatus, `อัปเดตสถานะตาม Settings flow`)
@@ -1940,56 +1610,29 @@ function ServiceRequestPageContent() {
   }
 
   // Accept SE request → create a new ServiceJob
-  function acceptSERequest(r: SERequest) {
-    const today = todayYmdInBangkok()
-    const newJob: ServiceJob = {
-      id: newId("job"),
-      job_no: `JOB-${new Date().getFullYear()}-${newId("n").slice(-6).toUpperCase()}`,
-      job_type: "repair",
-      status: "รอประเมิน",
-      priority: r.priority,
-      serial_number: r.equipment.includes("SN:") ? r.equipment.split("SN:")[1].trim() : "—",
+  function routeSERequestToStock(r: SERequest) {
+    const serial = r.equipment.includes("SN:") ? r.equipment.split("SN:")[1].trim() : "—"
+    const model = r.equipment.split("—")[0].trim() || r.equipment.trim() || "—"
+    appendStockDispatch({
+      id: newId("dp-se"),
+      item_name: model,
       manufacturer: "—",
-      model: r.equipment.split("—")[0].trim(),
-      received_date: today,
-      tracking_in: "—",
-      receive_channel: "พนักงาน",
-      customer_name: r.requested_by,
+      model,
+      serial_number: serial || "—",
       customer_org: r.customer_org,
+      customer_contact: r.requested_by,
+      symptom: `[From SE] ${r.issue_description}`,
+      receive_channel: "พนักงาน",
+      job_type: "repair",
       routing: "in_country",
-      symptom_reported: r.issue_description,
-      requires_approval: true,
-      source: "se",
-      source_dispatch_id: r.id,
-      created_at: today,
-    }
-    for (let i = 0; i < 3; i += 1) {
-      const baseJobs = readJobs([])
-      const alreadyAccepted = baseJobs.some(
-        (j) => j.source === "se" && j.source_dispatch_id === r.id,
-      )
-      if (alreadyAccepted) {
-        setJobs(baseJobs)
-        setSERequests((prev) => prev.filter((x) => x.id !== r.id))
-        removeIncomingSERequest(r.id)
-        return
-      }
-      const expectedVer = readJobsVersion()
-      const nextJobs = [newJob, ...baseJobs]
-      const wr = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
-      if (!wr.ok) continue
-      setJobs(nextJobs)
-      setSERequests((prev) => prev.filter((x) => x.id !== r.id))
-      removeIncomingSERequest(r.id)
-      setSearch("")
-      setFilterType("all")
-      setFilterStatus("ทั้งหมด")
-      setSelected(newJob)
-      setMainTab("jobs")
-      const orgs = readOrganizations([])
-      writeOrganizations(upsertOrganizationByName(orgs, r.customer_org, r.requested_by))
-      return
-    }
+      dispatched_by: "SE->Stock",
+      dispatched_at: new Date().toISOString(),
+    })
+    setSERequests((prev) => prev.filter((x) => x.id !== r.id))
+    removeIncomingSERequest(r.id)
+    const orgs = readOrganizations([])
+    writeOrganizations(upsertOrganizationByName(orgs, r.customer_org, r.requested_by))
+    setMainTab("from_stock")
   }
 
   // When a Repair job finishes and wants to send to Calibration (Cal team),
@@ -2099,6 +1742,13 @@ function ServiceRequestPageContent() {
       ? LEGACY_PROGRESS_FLOW
       : STATUS_FLOW
   const selectedJobFlow = sel ? getStatusFlowByJobType(sel.job_type) : workflowSettings.service_statuses
+  const technicianOptions = useMemo(() => {
+    const base = Array.isArray(stockDropdownConfig.service_technicians) ? stockDropdownConfig.service_technicians : []
+    const uniq = new Set(base.map((x) => x.trim()).filter(Boolean))
+    const cur = (sel?.technician || "").trim()
+    if (cur) uniq.add(cur)
+    return [...uniq].sort((a, b) => a.localeCompare(b, "th"))
+  }, [sel?.technician, stockDropdownConfig.service_technicians])
 
   const statusFilterOptions = useMemo(() => {
     if (filterType !== "all") return getStatusFlowByJobType(filterType)
@@ -2157,8 +1807,8 @@ function ServiceRequestPageContent() {
           >
             {myQueueOnly ? "My Queue" : "ทุกคิว"}
           </button>
-          <button onClick={() => setShowNew(true)} className="modern-button-primary premium-glow rounded-2xl">
-            <Plus className="h-4 w-4" /> สร้างงานใหม่
+          <button onClick={() => setMainTab("from_stock")} className="modern-button-primary premium-glow rounded-2xl">
+            <Plus className="h-4 w-4" /> รับงานผ่าน Stock (SOP)
           </button>
         </div>
       </div>
@@ -2712,17 +2362,21 @@ function ServiceRequestPageContent() {
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <input
+                  <select
                     value={sel.technician || ""}
                     onChange={(e) => updateSelected({ technician: e.target.value })}
-                    placeholder="ผู้รับผิดชอบ / Technician"
                     className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
-                  />
+                  >
+                    <option value="">ผู้รับผิดชอบ / Technician</option>
+                    {technicianOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
                   <input
                     value={sel.customer_name || ""}
-                    onChange={(e) => updateSelected({ customer_name: e.target.value })}
+                    readOnly
                     placeholder="ผู้ติดต่อลูกค้า"
-                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-gray-50 text-gray-600"
                   />
                 </div>
               </div>
@@ -3136,27 +2790,10 @@ function ServiceRequestPageContent() {
       {/* ── Tab: From SE ── */}
       {mainTab === "from_se" && (
         <div className="flex-1 overflow-y-auto">
-          <FromSETab requests={seRequests} onAccept={acceptSERequest} />
+          <FromSETab requests={seRequests} onRouteToStock={routeSERequestToStock} />
         </div>
       )}
 
-      {showNew && <NewJobDialog
-        orgNames={orgNames}
-        existingJobs={jobs}
-        onClose={()=>setShowNew(false)}
-        onOpenExistingJob={(job) => {
-          setSelected(job)
-          setMainTab("jobs")
-          setFilterType("all")
-          setFilterStatus("ทั้งหมด")
-          setSearch(job.job_no)
-        }}
-        onSave={j=>{
-          setJobs(p=>[{ ...j, source: "manual" },...p]);setSelected(j);setMainTab("jobs")
-          const orgs = readOrganizations([])
-          writeOrganizations(upsertOrganizationByName(orgs, j.customer_org, j.customer_name))
-        }}
-      />}
       {showQuoteDialog && sel && <QuotationDraftDialog job={sel} onClose={()=>setShowQuoteDialog(false)} />}
       {cancelDialogJob && (
         <CancelJobDialog

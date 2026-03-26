@@ -108,6 +108,7 @@ function SettingsPageContent() {
     stock_models: "",
     stock_manufacturers: "",
     calibration_labs: "",
+    service_technicians: "",
     service_statuses: "",
     calibration_statuses: "",
     se_customers: "",
@@ -169,6 +170,7 @@ function SettingsPageContent() {
         hint: "ยี่ห้อเสริมรวมกับรายการ Manufacturer ใน Product Catalog บนหน้ารับเข้า",
       },
       { key: "calibration_labs" as const, label: "Calibration Labs", hint: "Calibration routing lab options" },
+      { key: "service_technicians" as const, label: "Service Technicians", hint: "รายชื่อช่างสำหรับเลือกใน Service Request" },
     ],
     [],
   )
@@ -250,6 +252,7 @@ function SettingsPageContent() {
       stock_models: normalizeUnique(config.stock_models),
       stock_manufacturers: normalizeUnique(config.stock_manufacturers),
       calibration_labs: normalizeUnique(config.calibration_labs),
+      service_technicians: normalizeUnique(config.service_technicians),
     })
     writeASWorkflowSettings({
       service_statuses: normalizeUnique(asWorkflow.service_statuses) as ASWorkflowSettings["service_statuses"],

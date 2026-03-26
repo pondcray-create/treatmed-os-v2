@@ -300,6 +300,7 @@ export interface ASDropdownConfig {
   stock_models: string[]
   stock_manufacturers: string[]
   calibration_labs: string[]
+  service_technicians: string[]
 }
 
 export interface ASStockSnapshotItem {
@@ -409,6 +410,7 @@ export const DEFAULT_AS_DROPDOWN_CONFIG: ASDropdownConfig = {
     "TreatMed",
   ],
   calibration_labs: ["NIMT", "TNI", "มจธ."],
+  service_technicians: ["ช่างสมชาย", "ช่างวิทยา"],
 }
 
 export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
@@ -833,7 +835,13 @@ export function writeProactiveCalibrationAssets(value: ASProactiveCalibrationAss
 }
 
 export function readDropdownConfig(fallback: ASDropdownConfig = DEFAULT_AS_DROPDOWN_CONFIG) {
-  return readStore<ASDropdownConfig>(KEYS.dropdownConfig, fallback)
+  const value = readStore<Partial<ASDropdownConfig>>(KEYS.dropdownConfig, fallback)
+  return {
+    stock_models: Array.isArray(value.stock_models) ? value.stock_models : fallback.stock_models,
+    stock_manufacturers: Array.isArray(value.stock_manufacturers) ? value.stock_manufacturers : fallback.stock_manufacturers,
+    calibration_labs: Array.isArray(value.calibration_labs) ? value.calibration_labs : fallback.calibration_labs,
+    service_technicians: Array.isArray(value.service_technicians) ? value.service_technicians : fallback.service_technicians,
+  }
 }
 
 export function writeDropdownConfig(value: ASDropdownConfig) {

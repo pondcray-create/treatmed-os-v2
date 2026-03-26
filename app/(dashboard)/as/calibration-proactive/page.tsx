@@ -8,6 +8,8 @@ import {
   AS_STORE_KEYS,
   readJobs,
   readOrganizations,
+  readDropdownConfig,
+  readProductCatalog,
   readProactiveCalibrationAssets,
   upsertOrganizationByName,
   writeJobs,
@@ -15,8 +17,11 @@ import {
   writeProactiveCalibrationAssets,
   type ASServiceJob,
   type ASProactiveCalibrationAsset,
+  type ASDropdownConfig,
+  type ProductCatalogGroup,
 } from "@/lib/mock/as-store"
 import { formatThDateFromYMD, thDateInputBeHint } from "@/lib/format-th-datetime"
+import { getStockPatternManufacturers, getStockPatternModelsForManufacturer } from "@/lib/product-catalog-options"
 
 function daysDiff(fromISO: string, toISO: string) {
   const from = new Date(`${fromISO}T00:00:00.000Z`).getTime()
@@ -54,6 +59,8 @@ export default function CalibrationProactivePage() {
   const [search, setSearch] = useState("")
   const [openForm, setOpenForm] = useState(false)
   const today = new Date().toISOString().split("T")[0]
+  const [productCatalog, setProductCatalog] = useState<ProductCatalogGroup[]>([])
+  const [stockDropdownConfig, setStockDropdownConfig] = useState<ASDropdownConfig>(readDropdownConfig())
 
   const [form, setForm] = useState({
     customer_org: "",
@@ -67,7 +74,11 @@ export default function CalibrationProactivePage() {
   })
 
   useEffect(() => {
-    const sync = () => setAssets(readProactiveCalibrationAssets(SEED_ASSETS))
+    const sync = () => {
+      setAssets(readProactiveCalibrationAssets(SEED_ASSETS))
+      setProductCatalog(readProductCatalog())
+      setStockDropdownConfig(readDropdownConfig())
+    }
     sync()
     window.addEventListener("storage", sync)
     window.addEventListener("as-store-updated", sync)
@@ -101,6 +112,15 @@ export default function CalibrationProactivePage() {
     if (assets.length === 0) return
     writeProactiveCalibrationAssets(assets)
   }, [assets])
+
+  const manufacturerOptions = useMemo(
+    () => getStockPatternManufacturers(productCatalog, stockDropdownConfig),
+    [productCatalog, stockDropdownConfig],
+  )
+  const modelOptions = useMemo(
+    () => getStockPatternModelsForManufacturer(form.manufacturer, productCatalog, stockDropdownConfig),
+    [form.manufacturer, productCatalog, stockDropdownConfig],
+  )
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -372,8 +392,29 @@ export default function CalibrationProactivePage() {
                 <input value={form.customer_name} onChange={(e) => setForm((f) => ({ ...f, customer_name: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="ผู้ติดต่อ" />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input required value={form.manufacturer} onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="Manufacturer *" />
-                <input required value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="Model *" />
+                <select
+                  required
+                  value={form.manufacturer}
+                  onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value, model: "" }))}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200"
+                >
+                  <option value="">-- เลือกยี่ห้อ --</option>
+                  {manufacturerOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <select
+                  required
+                  value={form.model}
+                  disabled={!form.manufacturer}
+                  onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 disabled:bg-gray-100"
+                >
+                  <option value="">{form.manufacturer ? "-- เลือกรุ่น --" : "เลือกยี่ห้อก่อน"}</option>
+                  {modelOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
                 <input required value={form.serial_number} onChange={(e) => setForm((f) => ({ ...f, serial_number: e.target.value }))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200" placeholder="SN *" />
               </div>
               <div className="grid grid-cols-2 gap-3">
