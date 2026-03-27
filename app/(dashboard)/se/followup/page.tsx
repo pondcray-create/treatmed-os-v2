@@ -17,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { FollowupStatusBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
-import { readSESettings } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, readSESettings } from "@/lib/mock/as-store"
 import { useAuth } from "@/hooks/useAuth"
 import { Badge } from "@/components/ui/badge"
 
@@ -31,14 +31,6 @@ interface Followup {
   owner: string
   note: string
 }
-
-const MOCK_FOLLOWUPS: Followup[] = [
-  { id: "1", customer_name: "โรงพยาบาลกรุงเทพ", deal_title: "MRI 3T ใหม่", subject: "ส่งใบเสนอราคาฉบับปรับปรุง", due_date: "2024-03-22", status: "pending", owner: "คุณอนันต์", note: "" },
-  { id: "2", customer_name: "โรงพยาบาลรามาธิบดี", deal_title: "CT Scan 128 Slice", subject: "นัด Demo สินค้า", due_date: "2024-03-20", status: "done", owner: "คุณนภา", note: "Demo เสร็จแล้ว ลูกค้าประทับใจ" },
-  { id: "3", customer_name: "คลินิกสุขภาพดี", deal_title: "X-Ray Digital", subject: "โทรติดตามผลการพิจารณา", due_date: "2024-03-18", status: "pending", owner: "คุณรัตนา", note: "" },
-  { id: "4", customer_name: "โรงพยาบาลมหาราชนครเชียงใหม่", deal_title: "Ultrasound High-end", subject: "ส่งเอกสาร Spec Sheet", due_date: "2024-03-25", status: "pending", owner: "คุณอนันต์", note: "" },
-  { id: "5", customer_name: "โรงพยาบาลศิริราช", deal_title: "Endoscopy System", subject: "ประชุมกับทีมจัดซื้อ", due_date: "2024-03-15", status: "cancelled", owner: "คุณนภา", note: "ลูกค้าเลื่อนนัด" },
-]
 
 const followupSchema = z.object({
   customer_name: z.string().min(1),
@@ -56,7 +48,7 @@ const today = new Date().toISOString().split("T")[0]
 
 export default function FollowupPage() {
   const { profile } = useAuth()
-  const [followups, setFollowups] = useState<Followup[]>(MOCK_FOLLOWUPS)
+  const [followups, setFollowups] = useState<Followup[]>([])
   const [search, setSearch] = useState("")
   const [filterStatus, setFilterStatus] = useState("all")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -66,8 +58,20 @@ export default function FollowupPage() {
 
   useEffect(() => {
     const sync = () => setSESettings(readSESettings())
-    window.addEventListener("storage", sync)
-    return () => window.removeEventListener("storage", sync)
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) sync()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key === AS_STORE_KEYS.seSettings) sync()
+    }
+    sync()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
   }, [])
 
   const { register, handleSubmit, setValue, reset } = useForm<FollowupForm>({

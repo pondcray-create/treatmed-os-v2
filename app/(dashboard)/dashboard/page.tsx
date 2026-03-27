@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatCurrency } from "@/lib/utils"
-import { readStockItems, type ASStockSnapshotItem } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, readSEDeals, readStockItems, type ASStockSnapshotItem, type SEDeal } from "@/lib/mock/as-store"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line
@@ -27,12 +27,6 @@ const RECENT_SR = [
   { ticket_no: "SR-2024-005", customer: "โรงพยาบาลมหาราชนครเชียงใหม่", equipment: "Ventilator", status: "in_progress", priority: "urgent" },
 ]
 
-const RECENT_DEALS = [
-  { deal_no: "DEAL-001", title: "MRI 3T ใหม่", customer: "โรงพยาบาลกรุงเทพ", stage: "negotiation", value: 25000000 },
-  { deal_no: "DEAL-002", title: "CT Scan 128 Slice", customer: "โรงพยาบาลรามาธิบดี", stage: "proposal", value: 15000000 },
-  { deal_no: "DEAL-003", title: "Ultrasound High-end", customer: "รพ.มหาราช เชียงใหม่", stage: "qualified", value: 8000000 },
-]
-
 const STAGE_COLORS: Record<string, string> = {
   lead: "bg-gray-100 text-gray-700",
   qualified: "bg-blue-100 text-blue-700",
@@ -50,19 +44,45 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 export default function DashboardPage() {
   const [stockItems, setStockItems] = useState<ASStockSnapshotItem[]>([])
+  const [seDeals, setSEDeals] = useState<SEDeal[]>(() => readSEDeals([]))
 
   useEffect(() => {
-    const sync = () => {
-      setStockItems(readStockItems([]))
+    const syncStock = () => setStockItems(readStockItems([]))
+    const syncDeals = () => setSEDeals(readSEDeals([]))
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.stockItems) syncStock()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) syncDeals()
     }
-    sync()
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (!key) return
+      if (key === AS_STORE_KEYS.stockItems) syncStock()
+      if (key === AS_STORE_KEYS.seDeals) syncDeals()
+    }
+    syncStock()
+    syncDeals()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
+
+  const activeSEDeals = useMemo(
+    () => seDeals.filter((d) => d.stage !== "won" && d.stage !== "lost"),
+    [seDeals],
+  )
+  const weightedPipeline = useMemo(
+    () => activeSEDeals.reduce((sum, d) => sum + d.value * (d.probability / 100), 0),
+    [activeSEDeals],
+  )
+  const pipelineLabel =
+    weightedPipeline >= 1_000_000
+      ? `${(weightedPipeline / 1_000_000).toFixed(1)}M`
+      : weightedPipeline >= 1000
+        ? `${(weightedPipeline / 1000).toFixed(0)}K`
+        : String(Math.round(weightedPipeline))
 
   const stockAging = useMemo(() => {
     const today = new Date()
@@ -113,7 +133,8 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground">Pipeline มูลค่า</p>
               <div className="p-2 bg-violet-100 rounded-lg"><GitBranch className="h-4 w-4 text-violet-600" /></div>
             </div>
-            <p className="text-3xl font-bold text-violet-600">57M</p>
+            <p className="text-3xl font-bold text-violet-600">{activeSEDeals.length === 0 ? "—" : pipelineLabel}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Weighted (ไม่รวม Won/Lost)</p>
           </CardContent>
         </Card>
 
@@ -157,17 +178,9 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {[
-              { subject: "ส่งใบเสนอราคา MRI", customer: "รพ.กรุงเทพ", overdue: true },
-              { subject: "โทรติดตาม X-Ray", customer: "คลินิกสุขภาพดี", overdue: true },
-              { subject: "ส่ง Spec Sheet", customer: "รพ.มหาราช", overdue: false },
-            ].map((f, i) => (
-              <div key={i} className={`p-3 rounded-lg border text-sm ${f.overdue ? "bg-destructive/5 border-destructive/30" : "bg-muted/30"}`}>
-                <p className="font-medium">{f.subject}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{f.customer}</p>
-                {f.overdue && <Badge variant="destructive" className="mt-1 text-xs">เกินกำหนด</Badge>}
-              </div>
-            ))}
+            <p className="text-sm text-muted-foreground py-2">
+              ดูรายการ follow-up จริงได้ที่เมนู <span className="font-semibold text-foreground">SE → Follow-up</span>
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -207,19 +220,23 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {RECENT_DEALS.map(d => (
-              <div key={d.deal_no} className="flex items-start justify-between p-3 rounded-lg bg-muted/30">
-                <div>
-                  <span className="font-mono text-xs text-muted-foreground">{d.deal_no}</span>
-                  <p className="font-medium text-sm mt-0.5">{d.title}</p>
-                  <p className="text-xs text-muted-foreground">{d.customer}</p>
+            {activeSEDeals.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">ยังไม่มีดีลที่กำลังดำเนินการ (หรือดีลทั้งหมดอยู่ที่ Won/Lost)</p>
+            ) : (
+              activeSEDeals.slice(0, 6).map((d) => (
+                <div key={d.id} className="flex items-start justify-between p-3 rounded-lg bg-muted/30">
+                  <div>
+                    <span className="font-mono text-xs text-muted-foreground">{d.deal_no}</span>
+                    <p className="font-medium text-sm mt-0.5">{d.title}</p>
+                    <p className="text-xs text-muted-foreground">{d.customer_name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-primary">{formatCurrency(d.value)}</p>
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${STAGE_COLORS[d.stage] ?? "bg-gray-100 text-gray-700"}`}>{d.stage}</span>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-semibold text-primary">{formatCurrency(d.value)}</p>
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${STAGE_COLORS[d.stage]}`}>{d.stage}</span>
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </CardContent>
         </Card>
 

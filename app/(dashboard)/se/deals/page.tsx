@@ -26,6 +26,8 @@ interface Deal {
   deal_no: string
   customer_name: string
   title: string
+  product_model?: string
+  manufacturer?: string
   stage: string
   value: number
   probability: number
@@ -42,20 +44,6 @@ interface Activity {
   date: string
 }
 
-const MOCK_DEALS: Deal[] = [
-  { id: "1", deal_no: "DEAL-001", customer_name: "โรงพยาบาลกรุงเทพ", title: "MRI 3T ใหม่", stage: "negotiation", value: 25000000, probability: 70, expected_close_date: "2024-04-30", owner: "คุณอนันต์" },
-  { id: "2", deal_no: "DEAL-002", customer_name: "โรงพยาบาลรามาธิบดี", title: "CT Scan 128 Slice", stage: "proposal", value: 15000000, probability: 50, expected_close_date: "2024-05-15", owner: "คุณนภา" },
-  { id: "3", deal_no: "DEAL-003", customer_name: "โรงพยาบาลมหาราชนครเชียงใหม่", title: "Ultrasound High-end", stage: "qualified", value: 8000000, probability: 30, expected_close_date: "2024-06-01", owner: "คุณอนันต์" },
-  { id: "4", deal_no: "DEAL-004", customer_name: "คลินิกสุขภาพดี", title: "X-Ray Digital", stage: "lead", value: 3500000, probability: 20, expected_close_date: "2024-07-01", owner: "คุณรัตนา" },
-  { id: "5", deal_no: "DEAL-005", customer_name: "โรงพยาบาลสมิติเวช", title: "Mammography", stage: "won", value: 12000000, probability: 100, expected_close_date: "2024-03-01", owner: "คุณนภา" },
-]
-
-const MOCK_ACTIVITIES: Activity[] = [
-  { id: "1", deal_id: "1", type: "meeting", subject: "ประชุมนำเสนอสเปค", note: "ลูกค้าสนใจ รอใบเสนอราคา", date: "2024-03-15" },
-  { id: "2", deal_id: "1", type: "call", subject: "โทรติดตาม", note: "ลูกค้าต้องการเวลาพิจารณา 2 สัปดาห์", date: "2024-03-18" },
-  { id: "3", deal_id: "2", type: "demo", subject: "Demo สินค้า", note: "ประทับใจ ขอใบเสนอราคา", date: "2024-03-10" },
-]
-
 const ACTIVITY_ICONS = { call: Phone, email: Mail, meeting: Calendar, demo: Calendar }
 const ACTIVITY_LABELS = { call: "โทร", email: "อีเมล", meeting: "ประชุม", demo: "Demo" }
 
@@ -71,16 +59,16 @@ type ActivityForm = z.infer<typeof activitySchema>
 
 export default function DealsPage() {
   const { profile } = useAuth()
-  const [deals, setDeals] = useState<Deal[]>(() => readSEDeals(MOCK_DEALS))
+  const [deals, setDeals] = useState<Deal[]>(() => readSEDeals([]))
   const [seSettings, setSESettings] = useState(readSESettings())
-  const [activities, setActivities] = useState<Activity[]>(MOCK_ACTIVITIES)
+  const [activities, setActivities] = useState<Activity[]>([])
   const [search, setSearch] = useState("")
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null)
   const [actDialogOpen, setActDialogOpen] = useState(false)
   const { toast } = useToast()
 
   useEffect(() => {
-    const hydrateDeals = () => setDeals(readSEDeals(MOCK_DEALS))
+    const hydrateDeals = () => setDeals(readSEDeals([]))
     const hydrateSettings = () => setSESettings(readSESettings())
     const onStorage = (ev: StorageEvent) => {
       if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) hydrateDeals()

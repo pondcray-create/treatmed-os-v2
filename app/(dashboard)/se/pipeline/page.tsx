@@ -35,15 +35,6 @@ type StockBookingRequest = {
   decided_at?: string
 }
 
-const MOCK_DEALS: Deal[] = [
-  { id: "1", deal_no: "DEAL-001", customer_name: "โรงพยาบาลกรุงเทพ", title: "MRI 3T ใหม่", stage: "negotiation", value: 25000000, probability: 70, expected_close_date: "2024-04-30", owner: "คุณอนันต์" },
-  { id: "2", deal_no: "DEAL-002", customer_name: "โรงพยาบาลรามาธิบดี", title: "CT Scan 128 Slice", stage: "proposal", value: 15000000, probability: 50, expected_close_date: "2024-05-15", owner: "คุณนภา" },
-  { id: "3", deal_no: "DEAL-003", customer_name: "โรงพยาบาลมหาราชนครเชียงใหม่", title: "Ultrasound High-end", stage: "qualified", value: 8000000, probability: 30, expected_close_date: "2024-06-01", owner: "คุณอนันต์" },
-  { id: "4", deal_no: "DEAL-004", customer_name: "คลินิกสุขภาพดี", title: "X-Ray Digital", stage: "lead", value: 3500000, probability: 20, expected_close_date: "2024-07-01", owner: "คุณรัตนา" },
-  { id: "5", deal_no: "DEAL-005", customer_name: "โรงพยาบาลสมิติเวช", title: "Mammography", stage: "won", value: 12000000, probability: 100, expected_close_date: "2024-03-01", owner: "คุณนภา" },
-  { id: "6", deal_no: "DEAL-006", customer_name: "โรงพยาบาลสมิติเวช", title: "Endoscopy System", stage: "lead", value: 5000000, probability: 20, expected_close_date: "2024-08-01", owner: "คุณรัตนา" },
-]
-
 const dealSchema = z.object({
   customer_name: z.string().optional(),
   customer_name_new: z.string().optional(),
@@ -61,7 +52,7 @@ type DealForm = z.infer<typeof dealSchema>
 
 export default function PipelinePage() {
   const { profile } = useAuth()
-  const [deals, setDeals] = useState<Deal[]>(readSEDeals(MOCK_DEALS))
+  const [deals, setDeals] = useState<Deal[]>(() => readSEDeals([]))
   const [dialogOpen, setDialogOpen] = useState(false)
   const [seSettings, setSESettings] = useState(readSESettings())
   const [bookingRequests, setBookingRequests] = useState<StockBookingRequest[]>([])
@@ -76,7 +67,7 @@ export default function PipelinePage() {
   }, [productCatalog])
 
   useEffect(() => {
-    const hydrateDeals = () => setDeals(readSEDeals(MOCK_DEALS))
+    const hydrateDeals = () => setDeals(readSEDeals([]))
     const hydrateSettings = () => setSESettings(readSESettings())
     const hydrateBookings = () =>
       setBookingRequests(readStockBookingsLedger<StockBookingRequest[]>([]).filter((b) => b.source === "se_deal"))

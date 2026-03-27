@@ -490,16 +490,10 @@ export const DEFAULT_KPI_SETTINGS: KPISettings = {
   ],
 }
 
+/** ค่าเริ่มต้นไม่ใส่รายชื่อลูกค้า/SE — ตั้งค่าได้ที่ Settings → SE Module */
 export const DEFAULT_SE_SETTINGS: SESettings = {
-  se_customers: [
-    "โรงพยาบาลกรุงเทพ",
-    "โรงพยาบาลรามาธิบดี",
-    "โรงพยาบาลศิริราช",
-    "โรงพยาบาลสมิติเวช",
-    "โรงพยาบาลมหาราชนครเชียงใหม่",
-    "คลินิกสุขภาพดี",
-  ],
-  se_owners: ["คุณอนันต์", "คุณนภา", "คุณรัตนา"],
+  se_customers: [],
+  se_owners: [],
   se_stages: ["lead", "qualified", "proposal", "negotiation", "won", "lost"],
 }
 

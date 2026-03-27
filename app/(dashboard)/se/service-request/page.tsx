@@ -41,12 +41,6 @@ interface SEServiceRequest {
   created_at: string
 }
 
-const MOCK_SR: SEServiceRequest[] = [
-  { id: "1", ref_no: "SESR-001", customer_name: "โรงพยาบาลสมิติเวช", deal_title: "Mammography", request_type: "installation", description: "ติดตั้งเครื่องหลังส่งมอบ", status: "scheduled", scheduled_date: "2024-03-25", owner: "คุณนภา", created_at: "2024-03-18" },
-  { id: "2", ref_no: "SESR-002", customer_name: "โรงพยาบาลกรุงเทพ", deal_title: "MRI 3T ใหม่", request_type: "consultation", description: "ให้คำปรึกษาสเปคและการติดตั้ง", status: "pending", scheduled_date: "", owner: "คุณอนันต์", created_at: "2024-03-20" },
-  { id: "3", ref_no: "SESR-003", customer_name: "โรงพยาบาลรามาธิบดี", deal_title: "CT Scan 128 Slice", request_type: "training", description: "อบรมการใช้งาน CT Scan รุ่นใหม่", status: "completed", scheduled_date: "2024-03-10", owner: "คุณนภา", created_at: "2024-03-05" },
-]
-
 const REQUEST_TYPE_LABELS = {
   installation: "ติดตั้ง",
   training: "อบรม",
@@ -66,20 +60,17 @@ const srSchema = z.object({
 
 type SRForm = z.infer<typeof srSchema>
 
-const DEFAULT_CUSTOMERS = ["โรงพยาบาลกรุงเทพ", "โรงพยาบาลรามาธิบดี", "โรงพยาบาลศิริราช", "โรงพยาบาลสมิติเวช", "โรงพยาบาลมหาราชนครเชียงใหม่"]
-const DEFAULT_OWNERS = ["คุณอนันต์", "คุณนภา", "คุณรัตนา"]
-
 function seRefTag(id: string) {
   return `[SE_REQ:${id}]`
 }
 
 export default function SEServiceRequestPage() {
   const { profile } = useAuth()
-  const [requests, setRequests] = useState<SEServiceRequest[]>(MOCK_SR)
+  const [requests, setRequests] = useState<SEServiceRequest[]>([])
   const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
   const [stockDispatches, setStockDispatches] = useState<ASStockDispatch[]>([])
-  const [seCustomers, setSeCustomers] = useState<string[]>(DEFAULT_CUSTOMERS)
-  const [seOwners, setSeOwners] = useState<string[]>(DEFAULT_OWNERS)
+  const [seCustomers, setSeCustomers] = useState<string[]>(() => readSESettings().se_customers)
+  const [seOwners, setSeOwners] = useState<string[]>(() => readSESettings().se_owners)
   const [search, setSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<SEServiceRequest | null>(null)
@@ -135,8 +126,8 @@ export default function SEServiceRequestPage() {
       setServiceJobs(readJobs([]))
       setStockDispatches(readStockDispatches([]))
       const se = readSESettings()
-      setSeCustomers(se.se_customers.length > 0 ? se.se_customers : DEFAULT_CUSTOMERS)
-      setSeOwners(se.se_owners.length > 0 ? se.se_owners : DEFAULT_OWNERS)
+      setSeCustomers(se.se_customers)
+      setSeOwners(se.se_owners)
     }
     sync()
     window.addEventListener("storage", sync)
