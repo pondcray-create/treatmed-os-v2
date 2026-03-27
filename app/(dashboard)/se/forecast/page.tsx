@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
 import { TrendingUp } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -7,6 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DealStageBadge } from "@/components/ui/status-badge"
 import { formatCurrency } from "@/lib/utils"
+import { readSEDeals, readSESettings, type SEDeal } from "@/lib/mock/as-store"
+import { useAuth } from "@/hooks/useAuth"
+import { Textarea } from "@/components/ui/textarea"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend, PieChart, Pie, Cell,
@@ -23,30 +27,125 @@ const MONTHLY_DATA = [
   { month: "พ.ค.", target: 30000000, actual: 0, forecast: 15000000 },
 ]
 
-const PIPELINE_DEALS = [
-  { deal_no: "DEAL-001", title: "MRI 3T ใหม่", customer: "โรงพยาบาลกรุงเทพ", stage: "negotiation" as const, value: 25000000, probability: 70, weighted: 17500000, close_date: "2024-04-30" },
-  { deal_no: "DEAL-002", title: "CT Scan 128 Slice", customer: "โรงพยาบาลรามาธิบดี", stage: "proposal" as const, value: 15000000, probability: 50, weighted: 7500000, close_date: "2024-05-15" },
-  { deal_no: "DEAL-003", title: "Ultrasound High-end", customer: "โรงพยาบาลมหาราชนครเชียงใหม่", stage: "qualified" as const, value: 8000000, probability: 30, weighted: 2400000, close_date: "2024-06-01" },
-  { deal_no: "DEAL-004", title: "X-Ray Digital", customer: "คลินิกสุขภาพดี", stage: "lead" as const, value: 3500000, probability: 20, weighted: 700000, close_date: "2024-07-01" },
-  { deal_no: "DEAL-006", title: "Endoscopy System", customer: "โรงพยาบาลสมิติเวช", stage: "lead" as const, value: 5000000, probability: 20, weighted: 1000000, close_date: "2024-08-01" },
-]
-
-const STAGE_DIST = [
-  { name: "Lead", value: 8500000, color: "#94a3b8" },
-  { name: "Qualified", value: 8000000, color: "#60a5fa" },
-  { name: "Proposal", value: 15000000, color: "#a78bfa" },
-  { name: "Negotiation", value: 25000000, color: "#fb923c" },
-]
-
-const totalPipeline = PIPELINE_DEALS.reduce((sum, d) => sum + d.value, 0)
-const weightedPipeline = PIPELINE_DEALS.reduce((sum, d) => sum + d.weighted, 0)
 const ytdActual = MONTHLY_DATA.filter(m => m.actual > 0).reduce((sum, m) => sum + m.actual, 0)
 const ytdTarget = MONTHLY_DATA.filter(m => m.actual > 0).reduce((sum, m) => sum + m.target, 0)
+const FORECAST_UPDATES_KEY = "se_monthly_forecast_updates"
+
+type ForecastUpdate = { id: string; deal_id: string; month: string; note: string; updated_at: string }
 
 export default function ForecastPage() {
+  const { profile } = useAuth()
+  const [seSettings, setSESettings] = useState(readSESettings())
+  const [deals, setDeals] = useState<SEDeal[]>(readSEDeals([]))
+  const [selectedMonth, setSelectedMonth] = useState<string>("all")
+  const [myDealsOnly, setMyDealsOnly] = useState(true)
+  const [updates, setUpdates] = useState<ForecastUpdate[]>([])
+  const [draftNoteByDeal, setDraftNoteByDeal] = useState<Record<string, string>>({})
+  useEffect(() => {
+    const sync = () => {
+      setSESettings(readSESettings())
+      setDeals(readSEDeals([]))
+    }
+    window.addEventListener("storage", sync)
+    window.addEventListener("as-store-updated", sync)
+    sync()
+    return () => {
+      window.removeEventListener("storage", sync)
+      window.removeEventListener("as-store-updated", sync)
+    }
+  }, [])
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(FORECAST_UPDATES_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as ForecastUpdate[]
+      if (Array.isArray(parsed)) setUpdates(parsed)
+    } catch {
+      // ignore
+    }
+  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(FORECAST_UPDATES_KEY, JSON.stringify(updates))
+    } catch {
+      // ignore storage quota/privacy mode errors
+    }
+  }, [updates])
+
+  const visibleDeals = useMemo(() => {
+    const owner = profile?.full_name?.trim()
+    if (myDealsOnly && profile?.role !== "admin" && owner) return deals.filter((d) => (d.owner || "").trim() === owner)
+    return deals
+  }, [deals, myDealsOnly, profile?.full_name, profile?.role])
+  useEffect(() => {
+    if (profile?.role !== "admin") setMyDealsOnly(true)
+  }, [profile?.role])
+
+  const months = useMemo(() => {
+    const set = new Set<string>()
+    visibleDeals.forEach((d) => {
+      if (d.expected_close_date?.length >= 7) set.add(d.expected_close_date.slice(0, 7))
+    })
+    return Array.from(set).sort((a, b) => (a > b ? 1 : -1))
+  }, [visibleDeals])
+
+  const monthlyDeals = useMemo(() => {
+    if (selectedMonth === "all") return visibleDeals
+    return visibleDeals.filter((d) => d.expected_close_date?.startsWith(selectedMonth))
+  }, [visibleDeals, selectedMonth])
+
+  const totalPipeline = monthlyDeals.reduce((sum, d) => sum + (d.value || 0), 0)
+  const weightedPipeline = monthlyDeals.reduce((sum, d) => sum + (d.value || 0) * (d.probability || 0) / 100, 0)
+
+  const stageDist = useMemo(() => {
+    const palette = ["#94a3b8", "#60a5fa", "#a78bfa", "#fb923c", "#34d399", "#f87171", "#2dd4bf", "#c084fc"]
+    const stageOrder = seSettings.se_stages.length > 0 ? seSettings.se_stages : Array.from(new Set(monthlyDeals.map((d) => d.stage)))
+    return stageOrder
+      .map((s, idx) => ({
+        name: s,
+        value: monthlyDeals.filter((d) => d.stage === s).reduce((sum, d) => sum + (d.value || 0), 0),
+        color: palette[idx % palette.length],
+      }))
+      .filter((s) => s.value > 0)
+  }, [seSettings.se_stages, monthlyDeals])
+
+  function appendUpdate(deal: SEDeal) {
+    const note = (draftNoteByDeal[deal.id] || "").trim()
+    if (!note) return
+    const month = deal.expected_close_date?.slice(0, 7) || "unknown"
+    setUpdates((prev) => [{ id: `fu-${Date.now()}`, deal_id: deal.id, month, note, updated_at: new Date().toISOString() }, ...prev])
+    setDraftNoteByDeal((prev) => ({ ...prev, [deal.id]: "" }))
+  }
+
   return (
     <div>
       <PageHeader title="Forecast / พยากรณ์ยอดขาย" description="ภาพรวมยอดขายและ pipeline" icon={TrendingUp} />
+      {profile?.role !== "admin" && (
+        <div className="mb-3">
+          <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
+            My Data Only (enforced)
+          </Badge>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <Badge variant="outline">Monthly Forecast List</Badge>
+        <button
+          type="button"
+          onClick={() => setMyDealsOnly((v) => !v)}
+          disabled={profile?.role !== "admin"}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border ${myDealsOnly ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-white border-gray-200 text-gray-600"} ${profile?.role !== "admin" ? "opacity-60 cursor-not-allowed" : ""}`}
+        >
+          {myDealsOnly ? "เฉพาะดีลของฉัน" : "ดีลทั้งหมด"}
+        </button>
+        <select
+          value={selectedMonth}
+          onChange={(e) => setSelectedMonth(e.target.value)}
+          className="px-3 py-1.5 rounded-xl border border-gray-200 text-xs"
+        >
+          <option value="all">ทุกเดือน</option>
+          {months.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
@@ -102,14 +201,14 @@ export default function ForecastPage() {
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
-                <Pie data={STAGE_DIST} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" nameKey="name">
-                  {STAGE_DIST.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                <Pie data={stageDist} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" nameKey="name">
+                  {stageDist.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                 </Pie>
                 <Tooltip formatter={(v: number) => formatCurrency(v)} />
               </PieChart>
             </ResponsiveContainer>
             <div className="space-y-1 mt-2">
-              {STAGE_DIST.map(s => (
+              {stageDist.map(s => (
                 <div key={s.name} className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-1.5">
                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
@@ -141,20 +240,20 @@ export default function ForecastPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {PIPELINE_DEALS.map(d => (
-                <TableRow key={d.deal_no}>
+              {monthlyDeals.map(d => (
+                <TableRow key={d.id}>
                   <TableCell className="font-mono text-xs">{d.deal_no}</TableCell>
                   <TableCell className="font-medium">{d.title}</TableCell>
-                  <TableCell className="text-sm">{d.customer}</TableCell>
+                  <TableCell className="text-sm">{d.customer_name}</TableCell>
                   <TableCell><DealStageBadge stage={d.stage} /></TableCell>
-                  <TableCell className="text-right">{formatCurrency(d.value)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(d.value || 0)}</TableCell>
                   <TableCell className="text-center">
-                    <Badge variant={d.probability >= 70 ? "success" : d.probability >= 40 ? "warning" : "secondary"}>
+                    <Badge variant={(d.probability || 0) >= 70 ? "success" : (d.probability || 0) >= 40 ? "warning" : "secondary"}>
                       {d.probability}%
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right font-medium text-primary">{formatCurrency(d.weighted)}</TableCell>
-                  <TableCell className="text-sm">{d.close_date}</TableCell>
+                  <TableCell className="text-right font-medium text-primary">{formatCurrency((d.value || 0) * (d.probability || 0) / 100)}</TableCell>
+                  <TableCell className="text-sm">{d.expected_close_date || "-"}</TableCell>
                 </TableRow>
               ))}
               <TableRow className="bg-muted/50 font-bold">
@@ -166,6 +265,31 @@ export default function ForecastPage() {
               </TableRow>
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+      <Card className="mt-6">
+        <CardHeader><CardTitle className="text-base">อัปเดต Forecast ในเดือน (ส่งผู้ผลิต)</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {monthlyDeals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">ไม่มีดีลในช่วงเดือนที่เลือก</p>
+          ) : monthlyDeals.slice(0, 12).map((d) => (
+            <div key={`upd-${d.id}`} className="rounded-xl border border-gray-200 p-3">
+              <p className="text-sm font-semibold">{d.deal_no} · {d.title}</p>
+              <p className="text-xs text-muted-foreground">{d.customer_name} · Owner: {d.owner || "-"}</p>
+              <Textarea
+                className="mt-2"
+                placeholder="บันทึกการอัปเดตดีลสำหรับรายงานผู้ผลิต..."
+                value={draftNoteByDeal[d.id] || ""}
+                onChange={(e) => setDraftNoteByDeal((prev) => ({ ...prev, [d.id]: e.target.value }))}
+              />
+              <button type="button" onClick={() => appendUpdate(d)} className="mt-2 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold">บันทึกอัปเดต</button>
+              <div className="mt-2 space-y-1">
+                {updates.filter((u) => u.deal_id === d.id).slice(0, 3).map((u) => (
+                  <p key={u.id} className="text-xs text-gray-600">- {u.note}</p>
+                ))}
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
     </div>

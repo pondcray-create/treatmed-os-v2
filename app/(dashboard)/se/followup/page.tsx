@@ -18,6 +18,8 @@ import { FollowupStatusBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
 import { readSESettings } from "@/lib/mock/as-store"
+import { useAuth } from "@/hooks/useAuth"
+import { Badge } from "@/components/ui/badge"
 
 interface Followup {
   id: string
@@ -53,6 +55,7 @@ type FollowupForm = z.infer<typeof followupSchema>
 const today = new Date().toISOString().split("T")[0]
 
 export default function FollowupPage() {
+  const { profile } = useAuth()
   const [followups, setFollowups] = useState<Followup[]>(MOCK_FOLLOWUPS)
   const [search, setSearch] = useState("")
   const [filterStatus, setFilterStatus] = useState("all")
@@ -72,19 +75,23 @@ export default function FollowupPage() {
     defaultValues: { status: "pending", due_date: today },
   })
 
-  const filtered = followups.filter(f => {
+  const ownerName = profile?.full_name?.trim() || ""
+  const isAdmin = profile?.role === "admin"
+  const visibleFollowups = !isAdmin && ownerName ? followups.filter((f) => (f.owner || "").trim() === ownerName) : followups
+
+  const filtered = visibleFollowups.filter(f => {
     const matchSearch = f.subject.includes(search) || f.customer_name.includes(search)
     const matchStatus = filterStatus === "all" || f.status === filterStatus
     return matchSearch && matchStatus
   })
 
-  const overdue = followups.filter(f => f.status === "pending" && f.due_date < today)
-  const pending = followups.filter(f => f.status === "pending" && f.due_date >= today)
-  const done = followups.filter(f => f.status === "done")
+  const overdue = visibleFollowups.filter(f => f.status === "pending" && f.due_date < today)
+  const pending = visibleFollowups.filter(f => f.status === "pending" && f.due_date >= today)
+  const done = visibleFollowups.filter(f => f.status === "done")
 
   function openAdd() {
     setEditTarget(null)
-    reset({ status: "pending", due_date: today })
+    reset({ status: "pending", due_date: today, owner: isAdmin ? "" : ownerName })
     setDialogOpen(true)
   }
 
@@ -100,11 +107,12 @@ export default function FollowupPage() {
   }
 
   function onSubmit(data: FollowupForm) {
+    const owner = isAdmin ? data.owner : (ownerName || data.owner)
     if (editTarget) {
-      setFollowups(prev => prev.map(f => f.id === editTarget.id ? { ...f, ...data } : f))
+      setFollowups(prev => prev.map(f => f.id === editTarget.id ? { ...f, ...data, owner } : f))
       toast({ title: "แก้ไขสำเร็จ" })
     } else {
-      setFollowups(prev => [{ ...data, id: Date.now().toString(), note: data.note ?? "" }, ...prev])
+      setFollowups(prev => [{ ...data, owner, id: Date.now().toString(), note: data.note ?? "" }, ...prev])
       toast({ title: "เพิ่ม Follow-up สำเร็จ" })
     }
     setDialogOpen(false)
@@ -118,6 +126,13 @@ export default function FollowupPage() {
         icon={Bell}
         action={{ label: "เพิ่ม Follow-up", onClick: openAdd, icon: Plus }}
       />
+      {!isAdmin && (
+        <div className="mb-4">
+          <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
+            My Data Only (enforced)
+          </Badge>
+        </div>
+      )}
 
       {/* Summary */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -249,10 +264,11 @@ export default function FollowupPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>ผู้รับผิดชอบ *</Label>
-                <Select onValueChange={v => setValue("owner", v)} defaultValue={editTarget?.owner}>
+                <Select onValueChange={v => setValue("owner", v)} defaultValue={isAdmin ? editTarget?.owner : ownerName} disabled={!isAdmin}>
                   <SelectTrigger><SelectValue placeholder="เลือก SE" /></SelectTrigger>
                   <SelectContent>{seSettings.se_owners.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
                 </Select>
+                {!isAdmin && <p className="text-[11px] text-muted-foreground">SE staff ถูกล็อก owner เป็นบัญชีของตัวเอง</p>}
               </div>
               {editTarget && (
                 <div className="space-y-1.5">

@@ -18,7 +18,15 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
-import { appendIncomingSERequest, readJobs, type ASServiceJob } from "@/lib/mock/as-store"
+import { useAuth } from "@/hooks/useAuth"
+import {
+  appendStockDispatch,
+  readJobs,
+  readSESettings,
+  readStockDispatches,
+  type ASServiceJob,
+  type ASStockDispatch,
+} from "@/lib/mock/as-store"
 
 interface SEServiceRequest {
   id: string
@@ -58,12 +66,20 @@ const srSchema = z.object({
 
 type SRForm = z.infer<typeof srSchema>
 
-const CUSTOMERS = ["โรงพยาบาลกรุงเทพ", "โรงพยาบาลรามาธิบดี", "โรงพยาบาลศิริราช", "โรงพยาบาลสมิติเวช", "โรงพยาบาลมหาราชนครเชียงใหม่"]
-const OWNERS = ["คุณอนันต์", "คุณนภา", "คุณรัตนา"]
+const DEFAULT_CUSTOMERS = ["โรงพยาบาลกรุงเทพ", "โรงพยาบาลรามาธิบดี", "โรงพยาบาลศิริราช", "โรงพยาบาลสมิติเวช", "โรงพยาบาลมหาราชนครเชียงใหม่"]
+const DEFAULT_OWNERS = ["คุณอนันต์", "คุณนภา", "คุณรัตนา"]
+
+function seRefTag(id: string) {
+  return `[SE_REQ:${id}]`
+}
 
 export default function SEServiceRequestPage() {
+  const { profile } = useAuth()
   const [requests, setRequests] = useState<SEServiceRequest[]>(MOCK_SR)
   const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
+  const [stockDispatches, setStockDispatches] = useState<ASStockDispatch[]>([])
+  const [seCustomers, setSeCustomers] = useState<string[]>(DEFAULT_CUSTOMERS)
+  const [seOwners, setSeOwners] = useState<string[]>(DEFAULT_OWNERS)
   const [search, setSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<SEServiceRequest | null>(null)
@@ -74,34 +90,54 @@ export default function SEServiceRequestPage() {
     defaultValues: { request_type: "consultation", status: "pending" },
   })
 
-  const filtered = requests.filter(r =>
+  const ownerName = profile?.full_name?.trim() || ""
+  const isAdmin = profile?.role === "admin"
+  const visibleRequests = !isAdmin && ownerName ? requests.filter((r) => (r.owner || "").trim() === ownerName) : requests
+  const filtered = visibleRequests.filter(r =>
     r.customer_name.includes(search) || r.ref_no.includes(search) || r.description.includes(search)
   )
-  const serviceStatusBySourceId = useMemo(() => {
-    const map = new Map<string, { status: ASServiceJob["status"]; updatedAt: string }>()
+  const progressByRequestId = useMemo(() => {
+    const map = new Map<string, { label: string; updatedAt: string; level: "stock" | "service" | "done" | "cancelled" }>()
+    stockDispatches.forEach((d) => {
+      const m = (d.symptom || "").match(/\[SE_REQ:([^\]]+)\]/)
+      const id = m?.[1]
+      if (!id) return
+      map.set(id, { label: "รอ Stock ส่งต่อ Service", updatedAt: d.dispatched_at, level: "stock" })
+    })
     serviceJobs
-      .filter((j) => j.source === "se" && j.source_dispatch_id)
+      .filter((j) => j.source === "stock")
       .forEach((j) => {
+        const m = (j.symptom_reported || "").match(/\[SE_REQ:([^\]]+)\]/)
+        const id = m?.[1]
+        if (!id) return
         const lastLogAt = j.status_logs?.[j.status_logs.length - 1]?.at
-        map.set(j.source_dispatch_id as string, {
-          status: j.status,
+        map.set(id, {
+          label: j.status,
           updatedAt: lastLogAt || j.created_at,
+          level: j.status === "ปิดงาน" ? "done" : j.status === "ยกเลิก" ? "cancelled" : "service",
         })
       })
     return map
-  }, [serviceJobs])
+  }, [serviceJobs, stockDispatches])
 
-  const asStatusClass = (status: ASServiceJob["status"]) => {
-    if (status === "ปิดงาน") return "bg-green-100 text-green-700 border-green-200"
-    if (status === "ยกเลิก") return "bg-gray-100 text-gray-700 border-gray-200"
-    if (status === "QC") return "bg-teal-100 text-teal-700 border-teal-200"
-    if (status === "กำลังซ่อม" || status === "กำลังประเมิน") return "bg-blue-100 text-blue-700 border-blue-200"
-    if (status === "รออะไหล่" || status === "รอ PO") return "bg-orange-100 text-orange-700 border-orange-200"
+  const asStatusClass = (p: { label: string; level: "stock" | "service" | "done" | "cancelled" }) => {
+    if (p.level === "done") return "bg-green-100 text-green-700 border-green-200"
+    if (p.level === "cancelled") return "bg-gray-100 text-gray-700 border-gray-200"
+    if (p.level === "stock") return "bg-violet-100 text-violet-700 border-violet-200"
+    if (p.label === "QC") return "bg-teal-100 text-teal-700 border-teal-200"
+    if (p.label === "กำลังซ่อม" || p.label === "กำลังประเมิน") return "bg-blue-100 text-blue-700 border-blue-200"
+    if (p.label === "รออะไหล่" || p.label === "รอ PO") return "bg-orange-100 text-orange-700 border-orange-200"
     return "bg-amber-100 text-amber-800 border-amber-200"
   }
 
   useEffect(() => {
-    const sync = () => setServiceJobs(readJobs([]))
+    const sync = () => {
+      setServiceJobs(readJobs([]))
+      setStockDispatches(readStockDispatches([]))
+      const se = readSESettings()
+      setSeCustomers(se.se_customers.length > 0 ? se.se_customers : DEFAULT_CUSTOMERS)
+      setSeOwners(se.se_owners.length > 0 ? se.se_owners : DEFAULT_OWNERS)
+    }
     sync()
     window.addEventListener("storage", sync)
     window.addEventListener("as-store-updated", sync)
@@ -113,7 +149,7 @@ export default function SEServiceRequestPage() {
 
   function openAdd() {
     setEditTarget(null)
-    reset({ request_type: "consultation", status: "pending" })
+    reset({ request_type: "consultation", status: "pending", owner: isAdmin ? "" : ownerName })
     setDialogOpen(true)
   }
 
@@ -130,20 +166,28 @@ export default function SEServiceRequestPage() {
     } else {
       const createdDate = new Date().toISOString().split("T")[0]
       const requestId = `se-${Date.now()}`
-      const equipmentText = data.deal_title?.trim()
+      const modelText = data.deal_title?.trim()
         ? `${data.deal_title.trim()}`
         : "SE Service Request"
-      appendIncomingSERequest({
-        id: requestId,
+      const owner = isAdmin ? data.owner : (ownerName || data.owner)
+      appendStockDispatch({
+        id: `dp-se-${Date.now()}`,
+        item_name: modelText,
+        manufacturer: "—",
+        model: modelText,
+        serial_number: "—",
         customer_org: data.customer_name,
-        equipment: equipmentText,
-        issue_description: data.description,
-        requested_by: data.owner,
-        requested_at: createdDate,
-        priority: "normal",
+        customer_contact: owner,
+        symptom: `${data.description}\n${seRefTag(requestId)}`,
+        receive_channel: "พนักงาน",
+        job_type: "repair",
+        routing: "in_country",
+        dispatched_by: "SE",
+        dispatched_at: new Date().toISOString(),
       })
       setRequests(prev => [{
         ...data,
+        owner,
         id: requestId,
         ref_no: `SESR-${String(requests.length + 1).padStart(3, "0")}`,
         deal_title: data.deal_title ?? "",
@@ -168,6 +212,13 @@ export default function SEServiceRequestPage() {
         icon={FileText}
         action={{ label: "สร้าง SR", onClick: openAdd, icon: Plus }}
       />
+      {!isAdmin && (
+        <div className="mb-4">
+          <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
+            My Data Only (enforced)
+          </Badge>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
         {["pending", "scheduled", "completed", "cancelled"].map(s => (
@@ -218,17 +269,17 @@ export default function SEServiceRequestPage() {
                   <TableCell>{r.owner}</TableCell>
                   <TableCell><Badge variant={statusVariant(r.status) as any}>{statusLabel(r.status)}</Badge></TableCell>
                   <TableCell>
-                    {serviceStatusBySourceId.has(r.id) ? (
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${asStatusClass(serviceStatusBySourceId.get(r.id)!.status)}`}>
-                        {serviceStatusBySourceId.get(r.id)!.status}
+                    {progressByRequestId.has(r.id) ? (
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${asStatusClass(progressByRequestId.get(r.id)!)} `}>
+                        {progressByRequestId.get(r.id)!.label}
                       </span>
                     ) : (
-                      <Badge variant="outline">รอฝ่าย Service รับงาน</Badge>
+                      <Badge variant="outline">รอส่งเข้า Stock</Badge>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {serviceStatusBySourceId.has(r.id)
-                      ? formatDate(serviceStatusBySourceId.get(r.id)!.updatedAt)
+                    {progressByRequestId.has(r.id)
+                      ? formatDate(progressByRequestId.get(r.id)!.updatedAt)
                       : "-"}
                   </TableCell>
                   <TableCell className="text-right">
@@ -252,7 +303,7 @@ export default function SEServiceRequestPage() {
                 <Label>ลูกค้า *</Label>
                 <Select onValueChange={v => setValue("customer_name", v)} defaultValue={editTarget?.customer_name}>
                   <SelectTrigger><SelectValue placeholder="เลือกลูกค้า" /></SelectTrigger>
-                  <SelectContent>{CUSTOMERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seCustomers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
@@ -289,9 +340,9 @@ export default function SEServiceRequestPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>ผู้รับผิดชอบ *</Label>
-                <Select onValueChange={v => setValue("owner", v)} defaultValue={editTarget?.owner}>
+                <Select onValueChange={v => setValue("owner", v)} defaultValue={isAdmin ? editTarget?.owner : ownerName} disabled={!isAdmin}>
                   <SelectTrigger><SelectValue placeholder="เลือก SE" /></SelectTrigger>
-                  <SelectContent>{OWNERS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                  <SelectContent>{seOwners.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="col-span-2 space-y-1.5">

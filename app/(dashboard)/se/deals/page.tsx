@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Handshake, Plus, Search, Pencil, Phone, Mail, Calendar } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -18,13 +18,15 @@ import { Badge } from "@/components/ui/badge"
 import { DealStageBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { readSESettings } from "@/lib/mock/as-store"
+import { useAuth } from "@/hooks/useAuth"
 
 interface Deal {
   id: string
   deal_no: string
   customer_name: string
   title: string
-  stage: "lead" | "qualified" | "proposal" | "negotiation" | "won" | "lost"
+  stage: string
   value: number
   probability: number
   expected_close_date: string
@@ -68,23 +70,40 @@ const activitySchema = z.object({
 type ActivityForm = z.infer<typeof activitySchema>
 
 export default function DealsPage() {
+  const { profile } = useAuth()
   const [deals] = useState<Deal[]>(MOCK_DEALS)
+  const [seSettings, setSESettings] = useState(readSESettings())
   const [activities, setActivities] = useState<Activity[]>(MOCK_ACTIVITIES)
   const [search, setSearch] = useState("")
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null)
   const [actDialogOpen, setActDialogOpen] = useState(false)
   const { toast } = useToast()
 
+  useEffect(() => {
+    const sync = () => setSESettings(readSESettings())
+    window.addEventListener("storage", sync)
+    window.addEventListener("as-store-updated", sync)
+    return () => {
+      window.removeEventListener("storage", sync)
+      window.removeEventListener("as-store-updated", sync)
+    }
+  }, [])
+
   const { register, handleSubmit, setValue, reset } = useForm<ActivityForm>({
     resolver: zodResolver(activitySchema),
     defaultValues: { type: "call", date: new Date().toISOString().split("T")[0] },
   })
 
-  const filtered = deals.filter(d =>
+  const ownerName = profile?.full_name?.trim() || ""
+  const isAdmin = profile?.role === "admin"
+  const visibleDeals = !isAdmin && ownerName ? deals.filter((d) => (d.owner || "").trim() === ownerName) : deals
+
+  const filtered = visibleDeals.filter(d =>
     d.title.includes(search) || d.customer_name.includes(search) || d.deal_no.includes(search)
   )
 
   const dealActivities = selectedDeal ? activities.filter(a => a.deal_id === selectedDeal.id) : []
+  const knownStages = useMemo(() => new Set(seSettings.se_stages), [seSettings.se_stages])
 
   function addActivity(data: ActivityForm) {
     setActivities(prev => [{
@@ -100,6 +119,13 @@ export default function DealsPage() {
   return (
     <div>
       <PageHeader title="Deal & Activity" description="จัดการดีลและ activity" icon={Handshake} />
+      {!isAdmin && (
+        <div className="mb-4">
+          <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
+            My Data Only (enforced)
+          </Badge>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Deal List */}
@@ -127,6 +153,9 @@ export default function DealsPage() {
                   <p className="font-semibold text-sm leading-tight">{d.title}</p>
                   <DealStageBadge stage={d.stage} />
                 </div>
+                {!knownStages.has(d.stage) && (
+                  <p className="text-[11px] text-amber-600 font-medium">Stage นี้ไม่อยู่ใน Settings ล่าสุด</p>
+                )}
                 <p className="text-xs text-muted-foreground">{d.customer_name}</p>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-primary">{formatCurrency(d.value)}</span>
