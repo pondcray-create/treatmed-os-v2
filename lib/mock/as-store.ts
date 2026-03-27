@@ -401,6 +401,12 @@ export interface SEDeal {
   probability: number
   expected_close_date: string
   owner: string
+  /** รพ.ภาครัฐ (lookup) | อื่นๆ (เลือกจังหวัดเอง) */
+  customer_segment?: "public_hospital" | "other"
+  region?: string
+  province?: string
+  /** เลขเขตสุขภาพ 1–13 ตาม mapping จังหวัดในระบบ */
+  health_district?: number
 }
 
 export interface ProductCatalogGroup {

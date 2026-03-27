@@ -60,6 +60,7 @@ const NAV_GROUPS: NavGroup[] = [
     color: "text-violet-600",
     roles: ["admin", "se_staff"],
     items: [
+      { label: "SE Dashboard", href: "/se/dashboard", icon: <LayoutDashboard size={16} /> },
       { label: "Sales Pipeline", href: "/se/pipeline", icon: <TrendingUp size={16} /> },
       { label: "Deal & Activity", href: "/se/deals", icon: <Briefcase size={16} /> },
       { label: "Service Request", href: "/se/service-request", icon: <Wrench size={16} /> },

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useWatch, useForm } from "react-hook-form"
 import { GitBranch, Plus } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
@@ -10,14 +11,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { DealStageBadge } from "@/components/ui/status-badge"
 import { formatCurrency } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
-import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { AS_STORE_KEYS, readProductCatalog, readSEDeals, readSESettings, readStockBookingsLedger, writeSEDeals, writeSESettings, writeStockBookingsLedger, type SEDeal as Deal } from "@/lib/mock/as-store"
 import { useAuth } from "@/hooks/useAuth"
+import { PROVINCES, getProvinceInfo } from "@/lib/data/geography"
+import { formatHealthDistrictLabel, resolvePublicHospitalProvince } from "@/lib/data/th-public-hospitals"
+
+const PROVINCE_NAMES_SORTED = Array.from(new Set(PROVINCES.map((p) => p.name))).sort((a, b) => a.localeCompare(b, "th"))
 
 type StockBookingRequest = {
   id: string
@@ -38,6 +41,8 @@ type StockBookingRequest = {
 const dealSchema = z.object({
   customer_name: z.string().optional(),
   customer_name_new: z.string().optional(),
+  customer_segment: z.enum(["public_hospital", "other"]).optional(),
+  province: z.string().optional(),
   title: z.string().min(1),
   product_model: z.string().min(1),
   manufacturer: z.string().optional(),
@@ -113,10 +118,30 @@ export default function PipelinePage() {
     [myDealsOnly, isAdmin, currentOwnerName, deals],
   )
 
-  const { register, handleSubmit, setValue, reset, formState: { errors } } = useForm<DealForm>({
+  const { register, handleSubmit, setValue, reset, control, formState: { errors } } = useForm<DealForm>({
     resolver: zodResolver(dealSchema),
-    defaultValues: { stage: stages[0] ?? "lead", probability: 20, value: 0 },
+    defaultValues: {
+      stage: stages[0] ?? "lead",
+      probability: 20,
+      value: 0,
+      customer_segment: "public_hospital",
+      province: "",
+    },
   })
+
+  const customerSegment = useWatch({ control, name: "customer_segment", defaultValue: "public_hospital" })
+  const watchProvince = useWatch({ control, name: "province", defaultValue: "" })
+  const nameNew = useWatch({ control, name: "customer_name_new", defaultValue: "" })
+  const provinceGeo = watchProvince ? getProvinceInfo(watchProvince) : undefined
+
+  useEffect(() => {
+    if (customerMode !== "new" || customerSegment !== "public_hospital") return
+    const t = window.setTimeout(() => {
+      const hit = resolvePublicHospitalProvince(nameNew || "")
+      if (hit) setValue("province", hit)
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [nameNew, customerMode, customerSegment, setValue])
 
   const totalValue = visibleDeals.filter(d => d.stage !== "lost").reduce((sum, d) => sum + d.value * d.probability / 100, 0)
   const wonValue = visibleDeals.filter(d => d.stage === "won").reduce((sum, d) => sum + d.value, 0)
@@ -129,7 +154,19 @@ export default function PipelinePage() {
       toast({ title: "กรุณาเลือกลูกค้าหรือกรอกลูกค้าใหม่", variant: "destructive" })
       return
     }
+    if (customerMode === "new") {
+      const pv = (data.province || "").trim()
+      if (!pv) {
+        toast({
+          title: "กรุณาเลือกจังหวัด",
+          description: "ลูกค้าใหม่ต้องมีจังหวัดและภูมิภาค (เลือกจากรายการ — รพ.รัฐจะเติมอัตโนมัติเมื่อจับคีย์เวิร์ดได้)",
+          variant: "destructive",
+        })
+        return
+      }
+    }
     const selectedModel = modelOptions.find((m) => m.model === data.product_model)
+    const geo = customerMode === "new" && data.province?.trim() ? getProvinceInfo(data.province.trim()) : undefined
     const newDeal: Deal = {
       id: Date.now().toString(),
       deal_no: `DEAL-${String(deals.length + 1).padStart(3, "0")}`,
@@ -142,6 +179,10 @@ export default function PipelinePage() {
       expected_close_date: data.expected_close_date,
       owner: isAdmin ? (data.owner ?? "") : (currentOwnerName || data.owner || ""),
       manufacturer: data.manufacturer?.trim() || selectedModel?.manufacturer || undefined,
+      customer_segment: customerMode === "new" ? data.customer_segment : undefined,
+      province: customerMode === "new" ? data.province?.trim() : undefined,
+      region: customerMode === "new" && geo ? geo.region : undefined,
+      health_district: customerMode === "new" && geo ? geo.healthDistrict : undefined,
     }
     const nextDeals = [newDeal, ...deals]
     // Persist ดีลก่อน แล้วค่อยแตะ se_settings — ไม่งั้น as-store-updated จาก settings จะ sync ดีล
@@ -158,7 +199,16 @@ export default function PipelinePage() {
     toast({ title: "สร้างดีลสำเร็จ", description: `${newDeal.deal_no}: ${data.title}` })
     setDialogOpen(false)
     setCustomerMode("existing")
-    reset({ stage: stages[0] ?? "lead", probability: 20, value: 0, customer_name: "", customer_name_new: "", product_model: "" })
+    reset({
+      stage: stages[0] ?? "lead",
+      probability: 20,
+      value: 0,
+      customer_name: "",
+      customer_name_new: "",
+      product_model: "",
+      customer_segment: "public_hospital",
+      province: "",
+    })
   }
 
   function moveStage(dealId: string, newStage: string) {
@@ -204,7 +254,24 @@ export default function PipelinePage() {
         title="Sales Pipeline"
         description="ติดตามดีลแบบ Kanban"
         icon={GitBranch}
-        action={{ label: "เพิ่มดีล", onClick: () => { reset({ stage: stages[0] ?? "lead", probability: 20, value: 0, customer_name: "", customer_name_new: "", product_model: "" }); setDialogOpen(true) }, icon: Plus }}
+        action={{
+          label: "เพิ่มดีล",
+          onClick: () => {
+            reset({
+              stage: stages[0] ?? "lead",
+              probability: 20,
+              value: 0,
+              customer_name: "",
+              customer_name_new: "",
+              product_model: "",
+              customer_segment: "public_hospital",
+              province: "",
+            })
+            setCustomerMode("existing")
+            setDialogOpen(true)
+          },
+          icon: Plus,
+        }}
       />
       {!isAdmin && (
         <div className="mb-3">
@@ -250,6 +317,12 @@ export default function PipelinePage() {
                       <p className="font-semibold text-sm leading-tight">{d.title}</p>
                       <p className="text-xs text-muted-foreground">{d.customer_name}</p>
                       {d.product_model && <p className="text-xs text-muted-foreground">Model: {d.product_model}</p>}
+                      {(d.province || d.region || d.health_district != null) && (
+                        <p className="text-[10px] text-violet-800/90 leading-snug">
+                          {[d.region, d.province].filter(Boolean).join(" · ")}
+                          {d.health_district != null ? ` · ${formatHealthDistrictLabel(d.health_district)}` : ""}
+                        </p>
+                      )}
                       <div className="flex items-center justify-between pt-1 border-t">
                         <span className="text-sm font-medium text-primary">{formatCurrency(d.value)}</span>
                         <Badge variant="outline" className="text-xs">{d.probability}%</Badge>
@@ -292,7 +365,7 @@ export default function PipelinePage() {
 
       {/* Add Deal Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>เพิ่มดีลใหม่</DialogTitle></DialogHeader>
           <form onSubmit={handleSubmit(onSubmit)}>
             <div className="grid grid-cols-2 gap-4 py-4">
@@ -312,9 +385,71 @@ export default function PipelinePage() {
                     <SelectContent>{seSettings.se_customers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                   </Select>
                 ) : (
-                  <Input placeholder="พิมพ์ชื่อลูกค้าใหม่" {...register("customer_name_new")} />
+                  <div className="space-y-2">
+                    <Input placeholder="พิมพ์ชื่อลูกค้า / โรงพยาบาล" {...register("customer_name_new")} />
+                    <p className="text-[11px] text-muted-foreground leading-snug">
+                      โหมด <strong>รพ.ภาครัฐ</strong>: พิมพ์ชื่อ รพ. ระบบจะจับคีย์เวิร์ดแล้วเติมจังหวัดให้ (แก้ที่รายการจังหวัดด้านล่างได้) · <strong>อื่นๆ</strong>: เลือกจังหวัดเอง
+                    </p>
+                  </div>
                 )}
               </div>
+              {customerMode === "new" && (
+                <>
+                  <div className="col-span-2 space-y-2">
+                    <Label>ประเภทลูกค้า (ลูกค้าใหม่)</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={customerSegment === "public_hospital" ? "default" : "outline"}
+                        onClick={() => setValue("customer_segment", "public_hospital")}
+                      >
+                        โรงพยาบาลภาครัฐ
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={customerSegment === "other" ? "default" : "outline"}
+                        onClick={() => setValue("customer_segment", "other")}
+                      >
+                        อื่นๆ (คลินิก / เอกชน / ฯลฯ)
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1.5 sm:col-span-1">
+                      <Label>จังหวัด *</Label>
+                      <Select
+                        value={watchProvince || undefined}
+                        onValueChange={(v) => setValue("province", v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="เลือกจังหวัด" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-60">
+                          {PROVINCE_NAMES_SORTED.map((p) => (
+                            <SelectItem key={p} value={p}>
+                              {p}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>ภูมิภาค</Label>
+                      <Input readOnly className="bg-muted/80 text-sm" value={provinceGeo?.region ?? "—"} placeholder="เลือกจังหวัด" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>เขตสุขภาพ</Label>
+                      <Input
+                        readOnly
+                        className="bg-muted/80 text-sm"
+                        value={provinceGeo ? formatHealthDistrictLabel(provinceGeo.healthDistrict) : "—"}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
               <div className="space-y-1.5">
                 <Label>Stage</Label>
                 <Select onValueChange={v => setValue("stage", v as any)} defaultValue={stages[0] ?? "lead"}>

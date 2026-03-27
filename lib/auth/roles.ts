@@ -41,7 +41,7 @@ export function getDefaultRedirect(role: UserRole): string {
     case "as_stock":
       return "/as/stock";
     case "se_staff":
-      return "/se/pipeline";
+      return "/se/dashboard";
     default:
       return "/dashboard";
   }
