@@ -23,9 +23,12 @@ import {
   readStockNotifications,
   markStockNotificationRead,
   appendStockOutboundTraceLog,
+  appendEquipmentHistory,
   writeProactiveCalibrationAssets,
   writeJobsWithConcurrencyCheck,
   readJobsVersion,
+  readCommissioningClaimCases,
+  updateCommissioningClaimCase,
   tryReadJSON,
   AS_STORE_KEYS,
   writeStockItemsWithVersion,
@@ -44,15 +47,17 @@ import {
   type ASStockOutboundTraceLogEntry,
   type ASPartsRequest,
   type ASStockNotification,
+  type ASCommissioningClaimCase,
 } from "@/lib/mock/as-store"
 import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/format-th-datetime"
 import { newId } from "@/lib/new-id"
 import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
 import { getStockPatternManufacturers, getStockPatternModelsForManufacturer } from "@/lib/product-catalog-options"
+import { Badge } from "@/components/ui/badge"
 
 type StockCategory = "spare_part" | "module" | "sellable" | "consumable" | "tool" | "demo"
 type ItemStatus = "in_stock" | "reserved" | "on_loan" | "sold" | "pending_qc"
-type Tab = "all" | "booking" | "sold_history" | "loan" | "demo" | "service_history"
+type Tab = "all" | "booking" | "claim" | "sold_history" | "loan" | "demo" | "service_history"
 type ServiceJobTypeFilter = "all" | ASServiceJob["job_type"]
 /** เรียงลำดับในตาราง All Stock — ไม่บังคับ "เก่าก่อน" ค่าเริ่มต้นเป็นตามลำดับในระบบ */
 type StockTableSort = "default" | "days_high" | "days_low" | "name_az" | "qty_high"
@@ -120,6 +125,11 @@ interface StockTransaction {
 interface Booking {
   id: string; item_id: string; item_name: string; serial_number?: string
   sales_name: string; customer_name: string; booked_date: string; note?: string
+  source?: "stock_manual" | "se_deal"
+  se_deal_id?: string
+  request_status?: "pending" | "approved" | "rejected"
+  stock_feedback?: string
+  decided_at?: string
 }
 
 interface DispatchForm {
@@ -355,30 +365,42 @@ function upsertProactiveCalibrationFromInputProduct(tx: StockTransaction) {
 }
 
 /**
- * กำหนดช่อง SN module / companion ตอนรับเข้า ตามชื่อรุ่น (Product Model)
- * - IDA6-Nch → N ช่อง SN module
- * - ProSim8 (+P) + SPOT… → บังคับ SN SPOT Module
- * - ProSim4 + SPOTLIGHT → บังคับ SN SPOTLIGHT
+ * กำหนดช่อง SN component ตอนรับเข้า ตามชื่อรุ่น (Product Model)
+ * - IDA6* → บังคับ SN Display + SN Module 1..4 (ครบทุก module)
+ * - X2* → บังคับ SN เครื่องหลัก + SN sensor ตามชุด
+ * - X2 Solo* → บังคับ SN เครื่องหลัก + SN RF Sensor
+ * - ProSim8 (+P) + SPOT… / ProSim4 + SPOTLIGHT → บังคับ SN companion เดิม
  */
 function getReceiveModuleSpec(model: string): {
-  idaModuleCount: number
-  needsCompanion: boolean
-  companionLabel: string
+  mainLabel: string
+  componentLabels: string[]
 } {
   const m = model.trim()
-  const ida = m.match(/IDA6\s*-\s*(\d)\s*ch/i)
-  if (ida) {
-    const n = Number(ida[1])
-    const count = Number.isFinite(n) ? Math.min(4, Math.max(1, n)) : 0
-    return { idaModuleCount: count, needsCompanion: false, companionLabel: "" }
+  if (/IDA6/i.test(m)) {
+    return {
+      mainLabel: "Serial จอ (Display)",
+      componentLabels: ["Module 1", "Module 2", "Module 3", "Module 4"],
+    }
+  }
+  if (/X2\s*Solo/i.test(m)) {
+    return {
+      mainLabel: "Serial เครื่องหลัก (X2 Solo)",
+      componentLabels: ["R/F Sensor"],
+    }
+  }
+  if (/X2/i.test(m)) {
+    return {
+      mainLabel: "Serial เครื่องหลัก (X2)",
+      componentLabels: ["R/F Sensor", "CT Sensor", "Light Sensor", "MAM Sensor", "Survey Sensor"],
+    }
   }
   if (/ProSim8P?\s*\+\s*SPOT/i.test(m)) {
-    return { idaModuleCount: 0, needsCompanion: true, companionLabel: "SPOT Module" }
+    return { mainLabel: "Serial เครื่องหลัก", componentLabels: ["SPOT Module"] }
   }
   if (/ProSim4\s*\+\s*SPOTLIGHT/i.test(m)) {
-    return { idaModuleCount: 0, needsCompanion: true, companionLabel: "SPOTLIGHT" }
+    return { mainLabel: "Serial เครื่องหลัก", componentLabels: ["SPOTLIGHT"] }
   }
-  return { idaModuleCount: 0, needsCompanion: false, companionLabel: "" }
+  return { mainLabel: "Serial เครื่องหลัก", componentLabels: [] }
 }
 
 function ReturnDemoDialog({
@@ -1169,6 +1191,8 @@ function AddBookingDialog({
       customer_name: customerName,
       booked_date: new Date().toISOString().split("T")[0],
       note: form.note,
+      source: "stock_manual",
+      request_status: "approved",
     })
     onClose()
   }
@@ -1381,7 +1405,6 @@ function ReceiveProductDialog({
   const [newHasSerial, setNewHasSerial] = useState(true)
   const [newSerial, setNewSerial] = useState("")
   const [moduleSerials, setModuleSerials] = useState<string[]>([])
-  const [companionSerial, setCompanionSerial] = useState("")
   const [receiveDate, setReceiveDate] = useState(todayISO)
   const [equipmentCalDate, setEquipmentCalDate] = useState("")
   const [sendCommissioning, setSendCommissioning] = useState(false)
@@ -1424,11 +1447,10 @@ function ReceiveProductDialog({
 
   useEffect(() => {
     const spec = getReceiveModuleSpec(selectedCatalogModel)
-    if (spec.idaModuleCount > 0 || spec.needsCompanion) {
+    if (spec.componentLabels.length > 0) {
       setNewHasSerial(true)
     }
-    setModuleSerials(Array.from({ length: spec.idaModuleCount }, () => ""))
-    setCompanionSerial("")
+    setModuleSerials(Array.from({ length: spec.componentLabels.length }, () => ""))
   }, [selectedCatalogModel])
 
   const manufacturersSorted = useMemo(
@@ -1463,37 +1485,26 @@ function ReceiveProductDialog({
 
     const spec = getReceiveModuleSpec(selectedCatalogModel)
     const mainTrim = newSerial.trim()
-    const needsMainSerial = newHasSerial || spec.idaModuleCount > 0 || spec.needsCompanion
+    const needsMainSerial = newHasSerial || spec.componentLabels.length > 0
     if (needsMainSerial && !mainTrim) {
-      setSubmitError(spec.idaModuleCount > 0 ? "กรุณากรอก Serial ของเครื่องหลัก (Display)" : "กรุณากรอก Serial ของเครื่องหลัก")
+      setSubmitError(`กรุณากรอก ${spec.mainLabel}`)
       return
     }
 
-    if (spec.idaModuleCount > 0) {
+    if (spec.componentLabels.length > 0) {
       const mods = moduleSerials.map((s) => s.trim())
-      if (mods.length !== spec.idaModuleCount || mods.some((s) => !s)) {
-        setSubmitError(`รุ่นนี้ต้องกรอก Serial ของ Module ให้ครบ ${spec.idaModuleCount} ช่อง`)
+      if (mods.length !== spec.componentLabels.length || mods.some((s) => !s)) {
+        setSubmitError(`รุ่นนี้ต้องกรอก Serial ของ component ให้ครบ ${spec.componentLabels.length} ช่อง`)
         return
       }
       const allParts = [mainTrim, ...mods]
-      if (spec.needsCompanion) allParts.push(companionSerial.trim())
       if (!serialsUniqueInsensitive(allParts)) {
-        setSubmitError("Serial ซ้ำกันในชุดเดียวกัน กรุณาตรวจสอบ Serial เครื่องหลัก/Module")
-        return
-      }
-    } else if (spec.needsCompanion) {
-      const comp = companionSerial.trim()
-      if (!comp) {
-        setSubmitError(`กรุณากรอก Serial ของ ${spec.companionLabel || "Companion Module"}`)
-        return
-      }
-      if (!serialsUniqueInsensitive([mainTrim, comp])) {
-        setSubmitError("Serial เครื่องหลักซ้ำกับ Companion Serial กรุณาตรวจสอบ")
+        setSubmitError("Serial ซ้ำกันในชุดเดียวกัน กรุณาตรวจสอบ Serial เครื่องหลัก/Component")
         return
       }
     }
 
-    const incomingSerials = [mainTrim, ...moduleSerials.map((s) => s.trim()), companionSerial.trim()].filter(Boolean)
+    const incomingSerials = [mainTrim, ...moduleSerials.map((s) => s.trim())].filter(Boolean)
     const liveItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
     const mergedItems = Array.isArray(liveItems) ? liveItems : existingItems
     const liveJobs = readJobs([])
@@ -1545,8 +1556,8 @@ function ReceiveProductDialog({
       manufacturer: selectedManufacturer,
       model: selectedCatalogModel,
       serial_number: needsMainSerial ? mainTrim : undefined,
-      module_serials: spec.idaModuleCount > 0 ? moduleSerials.map((s) => s.trim()) : undefined,
-      companion_serial: spec.needsCompanion ? companionSerial.trim() : undefined,
+      module_serials: spec.componentLabels.length > 0 ? moduleSerials.map((s) => s.trim()) : undefined,
+      companion_serial: undefined,
       category: newCategory,
       set_status: sendCommissioning ? "pending_qc" : "in_stock",
       input_product_receive: true,
@@ -1617,16 +1628,21 @@ function ReceiveProductDialog({
                   ))}
                 </select>
               </div>
-              {(moduleSpec.idaModuleCount > 0 || moduleSpec.needsCompanion) && (
+              {moduleSpec.componentLabels.length > 0 && (
                 <div className="rounded-xl border border-violet-200 bg-violet-50/80 px-3 py-2 text-[11px] text-violet-900 leading-relaxed">
-                  {moduleSpec.idaModuleCount > 0 && (
+                  {/IDA6/i.test(selectedCatalogModel) && (
                     <p>
-                      <strong>IDA6:</strong> กรอก SN จอ (Display) + SN แต่ละ Module ครบ {moduleSpec.idaModuleCount} ช่อง
+                      <strong>IDA6:</strong> กรอก SN Display + SN Module 1..4 ครบทุกช่อง (แยก claim ราย module ได้)
                     </p>
                   )}
-                  {moduleSpec.needsCompanion && (
-                    <p className={moduleSpec.idaModuleCount > 0 ? "mt-1" : ""}>
-                      <strong>ชุดคู่:</strong> กรอก SN เครื่องหลัก + SN {moduleSpec.companionLabel} ครบทุกช่อง
+                  {/X2\s*Solo/i.test(selectedCatalogModel) && (
+                    <p className="mt-1">
+                      <strong>X2 Solo:</strong> ต้องกรอก SN เครื่องหลัก + SN R/F Sensor
+                    </p>
+                  )}
+                  {/X2/i.test(selectedCatalogModel) && !/X2\s*Solo/i.test(selectedCatalogModel) && (
+                    <p className="mt-1">
+                      <strong>X2:</strong> ต้องกรอก SN เครื่องหลัก + SN Sensor (R/F, CT, Light, MAM, Survey)
                     </p>
                   )}
                 </div>
@@ -1652,19 +1668,19 @@ function ReceiveProductDialog({
                 <input
                   type="checkbox"
                   checked={newHasSerial}
-                  disabled={moduleSpec.idaModuleCount > 0 || moduleSpec.needsCompanion}
+                  disabled={moduleSpec.componentLabels.length > 0}
                   onChange={(e) => setNewHasSerial(e.target.checked)}
                   className="rounded"
                 />
                 มี Serial Number (เครื่องหลัก / Display)
-                {(moduleSpec.idaModuleCount > 0 || moduleSpec.needsCompanion) && (
+                {moduleSpec.componentLabels.length > 0 && (
                   <span className="text-[11px] text-gray-500">(บังคับสำหรับรุ่นนี้)</span>
                 )}
               </label>
               {newHasSerial && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    {moduleSpec.idaModuleCount > 0 ? "Serial จอ (Display) *" : "Serial เครื่องหลัก *"}
+                    {moduleSpec.mainLabel} *
                   </label>
                   <input
                     required={newHasSerial}
@@ -1674,18 +1690,12 @@ function ReceiveProductDialog({
                   />
                 </div>
               )}
-              {moduleSpec.needsCompanion && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Serial {moduleSpec.companionLabel} *</label>
-                  <input required value={companionSerial} onChange={(e) => setCompanionSerial(e.target.value)} className={inp} />
-                </div>
-              )}
-              {moduleSpec.idaModuleCount > 0 && (
+              {moduleSpec.componentLabels.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-sm font-medium text-gray-800">Serial แต่ละ Module *</p>
+                  <p className="text-sm font-medium text-gray-800">Serial แต่ละ Component *</p>
                   {moduleSerials.map((val, idx) => (
                     <div key={idx}>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Module {idx + 1}</label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">{moduleSpec.componentLabels[idx] || `Component ${idx + 1}`}</label>
                       <input
                         required
                         value={val}
@@ -2039,11 +2049,17 @@ export default function StockPage() {
   const [moduleHistoryDialogSn, setModuleHistoryDialogSn] = useState<string | null>(null)
   const [loanHistorySearch, setLoanHistorySearch] = useState("")
   const [loanHistoryCustomer, setLoanHistoryCustomer] = useState("all")
+  const [claimCases, setClaimCases] = useState<ASCommissioningClaimCase[]>([])
+  const [claimReceiveTarget, setClaimReceiveTarget] = useState<string>("")
+  const [claimReplacementSerial, setClaimReplacementSerial] = useState("")
+  const [claimReplacementNote, setClaimReplacementNote] = useState("")
 
   const lowStock = items.filter(i => i.qty < i.min_qty && i.status === "in_stock")
   const demoOnLoan = items.filter(i => i.category === "demo" && i.status === "on_loan")
   const stockOnLoan = items.filter((i) => i.status === "on_loan")
   const reservedItems = items.filter((i) => i.status === "reserved")
+  const seBookingRequests = bookings.filter((b) => b.source === "se_deal")
+  const activeClaimCases = claimCases.filter((c) => c.status !== "closed")
   const soldItems = items.filter((i) => i.status === "sold")
   const today = todayYmdInBangkok()
 
@@ -2157,6 +2173,7 @@ export default function StockPage() {
       setModuleAssignments(readModuleAssignments([]))
       setPartsRequests(parts)
       setStockNotifications(notifications)
+      setClaimCases(readCommissioningClaimCases([]))
       jobsVersionRef.current = readJobsVersion()
     }
 
@@ -2915,6 +2932,73 @@ export default function StockPage() {
     setItems(p => p.map(i => i.id === b.item_id ? { ...i, status:"reserved", reserved_by_sales:b.sales_name, reserved_for_customer:b.customer_name } : i))
   }
 
+  function decideSEBookingRequest(req: Booking, decision: "approved" | "rejected") {
+    const feedback =
+      decision === "approved"
+        ? "Stock อนุมัติ: มีสินค้าเพียงพอสำหรับ booking"
+        : "Stock ปฏิเสธ: สินค้าไม่เพียงพอ/ยังไม่พร้อมจอง"
+    const decidedAt = new Date().toISOString()
+    setBookings((prev) =>
+      prev.map((b) =>
+        b.id === req.id
+          ? {
+              ...b,
+              request_status: decision,
+              stock_feedback: feedback,
+              decided_at: decidedAt,
+            }
+          : b,
+      ),
+    )
+    setDispatchSuccess(`${decision === "approved" ? "อนุมัติ" : "ปฏิเสธ"}คำขอจาก SE แล้ว`)
+    setTimeout(() => setDispatchSuccess(null), 3000)
+  }
+
+  function receiveClaimReplacementFromStock(claim: ASCommissioningClaimCase, replacementSN: string, note: string) {
+    const sn = replacementSN.trim()
+    if (!sn) return
+    const now = new Date().toISOString()
+    const replacementDispatch = {
+      id: newId("disp"),
+      customer_org: claim.customer_org,
+      customer_contact: claim.customer_name || "",
+      item_name: `${claim.model} (Replacement Claim)`,
+      serial_number: sn,
+      job_type: "commissioning" as const,
+      symptom: `[CLAIM_CASE:${claim.id}] Replacement from overseas for old SN ${claim.old_serial_number}. ${claim.failure_reason}`,
+      dispatched_by: "Stock Team",
+      dispatched_at: now,
+    }
+    appendStockDispatch(replacementDispatch)
+    const updated = updateCommissioningClaimCase(claim.id, {
+      status: "replacement_received",
+      replacement_serial_number: sn,
+      replacement_dispatch_id: replacementDispatch.id,
+      replacement_received_at: now,
+      replacement_note: note.trim() || undefined,
+    })
+    if (updated) {
+      setClaimCases(readCommissioningClaimCases([]))
+    }
+    appendEquipmentHistory({
+      id: newId("eh"),
+      serial_number: claim.old_serial_number,
+      model: claim.model,
+      customer_org: claim.customer_org,
+      job_id: claim.source_job_id,
+      job_no: claim.source_job_no,
+      event_kind: "replacement_received",
+      status: "รอประเมิน",
+      message: `Replacement received by Stock, SN ${sn}${note.trim() ? ` · ${note.trim()}` : ""}`,
+      created_at: now,
+    })
+    setClaimReceiveTarget("")
+    setClaimReplacementSerial("")
+    setClaimReplacementNote("")
+    setDispatchSuccess("รับเครื่องทดแทนแล้ว และส่งเข้า Service commissioning queue เรียบร้อย")
+    setTimeout(() => setDispatchSuccess(null), 3500)
+  }
+
   function quickLoanItem(item: StockItem, payload: { customer: string; dueDate: string }) {
     if (!canOpenStockLoanForm(item)) {
       setDispatchSuccess("ยืมไม่ได้: Demo ยืมได้ทันที — สินค้าอื่นต้องได้รับอนุมัติก่อน")
@@ -3231,6 +3315,7 @@ export default function StockPage() {
   const TABS = [
     { id:"all" as Tab, label:"All Stock" },
     { id: "booking" as Tab, label: `Booking (${reservedItems.length})` },
+    { id: "claim" as Tab, label: `Claim (${activeClaimCases.length})` },
     { id: "sold_history" as Tab, label: `Sold (${soldHistoryRows.length})` },
     { id:"loan" as Tab, label:`Loan (${stockOnLoan.length})` },
     { id:"demo" as Tab, label:"Demo Tracker" },
@@ -3916,6 +4001,52 @@ export default function StockPage() {
             </div>
           </div>
 
+          <div className="bg-white rounded-3xl border border-indigo-200 p-4">
+            <h4 className="font-semibold text-sm text-indigo-900 mb-2">คำขอ Booking จาก SE Deals</h4>
+            {seBookingRequests.length === 0 ? (
+              <p className="text-xs text-gray-500">ยังไม่มีคำขอจาก SE</p>
+            ) : (
+              <div className="space-y-2">
+                {seBookingRequests
+                  .sort((a, b) => (a.booked_date < b.booked_date ? 1 : -1))
+                  .map((r) => (
+                    <div key={r.id} className="rounded-2xl border border-indigo-100 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">{r.item_name}</p>
+                          <p className="text-xs text-gray-600">{r.customer_name} · {r.sales_name}</p>
+                          {r.se_deal_id && <p className="text-[11px] text-gray-500 font-mono">SE Deal: {r.se_deal_id}</p>}
+                        </div>
+                        <Badge variant={r.request_status === "approved" ? "success" : r.request_status === "rejected" ? "destructive" : "warning"}>
+                          {r.request_status || "pending"}
+                        </Badge>
+                      </div>
+                      {r.note && <p className="text-xs text-gray-500 mt-1">{r.note}</p>}
+                      {r.stock_feedback && <p className="text-xs text-indigo-700 mt-1">{r.stock_feedback}</p>}
+                      {r.request_status === "pending" && (
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => decideSEBookingRequest(r, "approved")}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100"
+                          >
+                            อนุมัติ (ของพอ)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => decideSEBookingRequest(r, "rejected")}
+                            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100"
+                          >
+                            ปฏิเสธ (ของไม่พอ)
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+
           {reservedItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-gray-300">
               <Bookmark className="h-16 w-16 mb-3 opacity-30" />
@@ -4007,6 +4138,88 @@ export default function StockPage() {
                   </div>
                 )
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Tab: Claim (Commissioning failed) ─────────────────────────────── */}
+      {tab === "claim" && (
+        <div className="flex-1 overflow-y-auto space-y-4">
+          <div className="flex items-start gap-3 p-4 bg-indigo-50 border border-indigo-200 rounded-2xl">
+            <Bell className="h-4 w-4 text-indigo-500 shrink-0 mt-0.5" />
+            <div className="text-sm text-indigo-900 space-y-1">
+              <p>
+                ฟังก์ชันย่อย Claim ใน Stock: ติดตามเคส Commissioning ไม่ผ่าน แยกต่อเครื่อง/Module/Sensor ตาม SN และบันทึกรับเครื่องทดแทน
+              </p>
+              <p className="text-indigo-700/90">
+                เมื่อรับเครื่องทดแทน ระบบจะส่งเข้าคิว Service (Commissioning) อัตโนมัติ เพื่อปิด cycle แบบ end-to-end
+              </p>
+            </div>
+          </div>
+          {activeClaimCases.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-gray-300">
+              <AlertTriangle className="h-16 w-16 mb-3 opacity-30" />
+              <p className="text-sm">ยังไม่มีเคส Claim ที่เปิดอยู่</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {activeClaimCases.map((c) => (
+                <div key={c.id} className="p-5 bg-white rounded-3xl border-2 border-indigo-200 shadow-sm">
+                  <div className="flex items-start justify-between mb-3 gap-2">
+                    <div>
+                      <p className="font-bold text-gray-900">{c.model}</p>
+                      <p className="text-xs text-gray-500">{c.customer_org}</p>
+                    </div>
+                    <Badge variant={c.status === "replacement_received" || c.status === "replacement_commissioning" ? "success" : "warning"}>
+                      {c.status}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-gray-600 font-mono">Old SN: {c.old_serial_number}</p>
+                  <p className="text-xs text-gray-600 mt-1">เหตุผล: {c.failure_reason}</p>
+                  {c.claim_reference && <p className="text-xs text-gray-600 mt-1">Claim Ref: {c.claim_reference}</p>}
+                  {c.replacement_serial_number && (
+                    <p className="text-xs text-emerald-700 font-mono mt-1">Replacement SN: {c.replacement_serial_number}</p>
+                  )}
+                  {c.status === "sent_overseas" && (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[1.4fr_2fr_auto]">
+                      <input
+                        value={claimReceiveTarget === c.id ? claimReplacementSerial : ""}
+                        onFocus={() => setClaimReceiveTarget(c.id)}
+                        onChange={(e) => {
+                          setClaimReceiveTarget(c.id)
+                          setClaimReplacementSerial(e.target.value)
+                        }}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm font-mono"
+                        placeholder="New Replacement SN"
+                      />
+                      <input
+                        value={claimReceiveTarget === c.id ? claimReplacementNote : ""}
+                        onFocus={() => setClaimReceiveTarget(c.id)}
+                        onChange={(e) => {
+                          setClaimReceiveTarget(c.id)
+                          setClaimReplacementNote(e.target.value)
+                        }}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                        placeholder="หมายเหตุรับเข้า"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          receiveClaimReplacementFromStock(
+                            c,
+                            claimReceiveTarget === c.id ? claimReplacementSerial : "",
+                            claimReceiveTarget === c.id ? claimReplacementNote : "",
+                          )
+                        }
+                        className="px-3 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600"
+                      >
+                        รับเครื่องทดแทน
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
