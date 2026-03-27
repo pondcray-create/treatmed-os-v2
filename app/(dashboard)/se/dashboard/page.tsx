@@ -13,7 +13,7 @@ import { formatCurrency } from "@/lib/utils"
 import { formatHealthDistrictLabel } from "@/lib/data/th-public-hospitals"
 
 /** ดีลที่น่าจะต้องขึ้น E-bidding — มอนิเตอร์ทีมขาย */
-const EBIDDING_MIN_PROB_EXCLUSIVE = 70
+const EBIDDING_MIN_PROBABILITY = 70
 const EBIDDING_MIN_VALUE_EXCLUSIVE = 500_000
 
 function isOpenDeal(d: SEDeal) {
@@ -23,7 +23,7 @@ function isOpenDeal(d: SEDeal) {
 }
 
 function isEbiddingWatch(d: SEDeal) {
-  return d.probability > EBIDDING_MIN_PROB_EXCLUSIVE && d.value > EBIDDING_MIN_VALUE_EXCLUSIVE && isOpenDeal(d)
+  return d.probability >= EBIDDING_MIN_PROBABILITY && d.value > EBIDDING_MIN_VALUE_EXCLUSIVE && isOpenDeal(d)
 }
 
 export default function SEDashboardPage() {
@@ -68,7 +68,7 @@ export default function SEDashboardPage() {
     <div className="relative">
       <PageHeader
         title="SE Dashboard"
-        description={`มอนิเตอร์ดีล E-bidding (โอกาส > ${EBIDDING_MIN_PROB_EXCLUSIVE}% และมูลค่า > ${formatCurrency(EBIDDING_MIN_VALUE_EXCLUSIVE)}) · Performance Hex`}
+        description={`มอนิเตอร์ดีล E-bidding (โอกาส ≥ ${EBIDDING_MIN_PROBABILITY}% และมูลค่า > ${formatCurrency(EBIDDING_MIN_VALUE_EXCLUSIVE)}) · Performance Hex`}
         icon={LayoutDashboard}
       />
       {!isAdmin && (
@@ -113,7 +113,7 @@ export default function SEDashboardPage() {
                 เฝ้า E-bidding
               </CardTitle>
               <p className="text-[10px] text-amber-800/90 font-normal leading-snug">
-                โอกาส &gt; {EBIDDING_MIN_PROB_EXCLUSIVE}% · มูลค่า &gt; {formatCurrency(EBIDDING_MIN_VALUE_EXCLUSIVE)} · ยังไม่ Won/Lost
+                โอกาส ≥ {EBIDDING_MIN_PROBABILITY}% · มูลค่า &gt; {formatCurrency(EBIDDING_MIN_VALUE_EXCLUSIVE)} · ยังไม่ Won/Lost
               </p>
             </CardHeader>
             <CardContent className="px-4 pb-4 pt-0 space-y-2 max-h-[min(70vh,520px)] overflow-y-auto">

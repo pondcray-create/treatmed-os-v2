@@ -15,14 +15,16 @@ export default function DashboardLayout({
   const { profile, loading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
-  const role = (profile?.role ?? "as_service") as UserRole;
 
   useEffect(() => {
     if (loading) return;
+    // อย่าใช้ role หลอก (as_service) ตอน profile ยังไม่มา — จะทำให้หน้า /se/* โดน redirect ทิ้งก่อนโหลดจบ
+    if (!profile) return;
+    const role = profile.role as UserRole;
     if (!canAccess(role, pathname)) {
       router.replace(getDefaultRedirect(role));
     }
-  }, [loading, pathname, role, router]);
+  }, [loading, profile, pathname, router]);
 
   return (
     <div className="flex min-h-screen bg-gray-50">

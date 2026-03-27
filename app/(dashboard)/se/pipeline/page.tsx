@@ -15,12 +15,43 @@ import { formatCurrency } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { AS_STORE_KEYS, readProductCatalog, readSEDeals, readSESettings, readStockBookingsLedger, writeSEDeals, writeSESettings, writeStockBookingsLedger, type SEDeal as Deal } from "@/lib/mock/as-store"
+import {
+  AS_STORE_KEYS,
+  readOrganizations,
+  readProductCatalog,
+  readSEDeals,
+  readSESettings,
+  readStockBookingsLedger,
+  writeSEDeals,
+  writeSESettings,
+  writeStockBookingsLedger,
+  type ASOrganization,
+  type SEDeal as Deal,
+} from "@/lib/mock/as-store"
 import { useAuth } from "@/hooks/useAuth"
 import { PROVINCES, getProvinceInfo } from "@/lib/data/geography"
 import { formatHealthDistrictLabel, resolvePublicHospitalProvince } from "@/lib/data/th-public-hospitals"
 
 const PROVINCE_NAMES_SORTED = Array.from(new Set(PROVINCES.map((p) => p.name))).sort((a, b) => a.localeCompare(b, "th"))
+
+/** ขอ Booking ไป Stock ได้เมื่อโอกาส ≥ ค่านี้ */
+const BOOKING_MIN_PROBABILITY = 70
+
+/** โอกาสแนะนำตาม Stage — ใช้เมื่อเปลี่ยน Stage (แก้ไขทับได้) */
+function suggestedProbabilityForStage(stage: string, stages: string[]): number {
+  const s = (stage || "").toLowerCase()
+  if (s.includes("won")) return 100
+  if (s.includes("lost")) return 0
+  const pipeline = stages.filter((x) => !/won/i.test(x) && !/lost/i.test(x))
+  const idx = pipeline.indexOf(stage)
+  if (idx >= 0 && pipeline.length > 0) {
+    if (pipeline.length === 1) return 50
+    return Math.round(20 + (idx / (pipeline.length - 1)) * 65)
+  }
+  const i = stages.indexOf(stage)
+  if (i < 0) return 35
+  return Math.min(90, 15 + Math.round((i / Math.max(1, stages.length - 1)) * 70))
+}
 
 type StockBookingRequest = {
   id: string
@@ -61,6 +92,7 @@ export default function PipelinePage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [seSettings, setSESettings] = useState(readSESettings())
   const [bookingRequests, setBookingRequests] = useState<StockBookingRequest[]>([])
+  const [orgs, setOrgs] = useState<ASOrganization[]>([])
   const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing")
   const [myDealsOnly, setMyDealsOnly] = useState(true)
   const { toast } = useToast()
@@ -76,11 +108,13 @@ export default function PipelinePage() {
     const hydrateSettings = () => setSESettings(readSESettings())
     const hydrateBookings = () =>
       setBookingRequests(readStockBookingsLedger<StockBookingRequest[]>([]).filter((b) => b.source === "se_deal"))
+    const hydrateOrgs = () => setOrgs(readOrganizations([]))
 
     const onStorage = (ev: StorageEvent) => {
       if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) hydrateDeals()
       if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) hydrateSettings()
       if (!ev.key || ev.key === AS_STORE_KEYS.stockBookings) hydrateBookings()
+      if (!ev.key || ev.key === AS_STORE_KEYS.orgs) hydrateOrgs()
     }
     const onStoreUpdated = (ev: Event) => {
       const key = (ev as CustomEvent<{ key?: string }>).detail?.key
@@ -88,10 +122,12 @@ export default function PipelinePage() {
       if (key === AS_STORE_KEYS.seDeals) hydrateDeals()
       if (key === AS_STORE_KEYS.seSettings) hydrateSettings()
       if (key === AS_STORE_KEYS.stockBookings) hydrateBookings()
+      if (key === AS_STORE_KEYS.orgs) hydrateOrgs()
     }
     hydrateDeals()
     hydrateSettings()
     hydrateBookings()
+    hydrateOrgs()
     window.addEventListener("storage", onStorage)
     window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
@@ -130,9 +166,19 @@ export default function PipelinePage() {
   })
 
   const customerSegment = useWatch({ control, name: "customer_segment", defaultValue: "public_hospital" })
+  const watchStage = useWatch({ control, name: "stage", defaultValue: stages[0] ?? "lead" })
   const watchProvince = useWatch({ control, name: "province", defaultValue: "" })
   const nameNew = useWatch({ control, name: "customer_name_new", defaultValue: "" })
+  const watchCustomerExisting = useWatch({ control, name: "customer_name", defaultValue: "" })
   const provinceGeo = watchProvince ? getProvinceInfo(watchProvince) : undefined
+
+  useEffect(() => {
+    if (customerMode !== "existing") return
+    const nm = (watchCustomerExisting || "").trim()
+    if (!nm) return
+    const o = orgs.find((x) => x.name.trim() === nm)
+    if (o?.province) setValue("province", o.province)
+  }, [customerMode, watchCustomerExisting, orgs, setValue])
 
   useEffect(() => {
     if (customerMode !== "new" || customerSegment !== "public_hospital") return
@@ -154,19 +200,46 @@ export default function PipelinePage() {
       toast({ title: "กรุณาเลือกลูกค้าหรือกรอกลูกค้าใหม่", variant: "destructive" })
       return
     }
+    const orgMatch = orgs.find((o) => o.name.trim() === customerName.trim())
+    let provinceStr = ""
+    let regionStr: string | undefined
+    let healthNum: number | undefined
+
     if (customerMode === "new") {
-      const pv = (data.province || "").trim()
-      if (!pv) {
+      provinceStr = (data.province || "").trim()
+      if (!provinceStr) {
         toast({
           title: "กรุณาเลือกจังหวัด",
-          description: "ลูกค้าใหม่ต้องมีจังหวัดและภูมิภาค (เลือกจากรายการ — รพ.รัฐจะเติมอัตโนมัติเมื่อจับคีย์เวิร์ดได้)",
+          description: "ต้องมีจังหวัดและภูมิภาค (รพ.รัฐจะเติมจังหวัดอัตโนมัติเมื่อจับคีย์เวิร์ดได้)",
           variant: "destructive",
         })
         return
       }
+      const g = getProvinceInfo(provinceStr)
+      regionStr = g?.region
+      healthNum = g?.healthDistrict
+    } else {
+      if (orgMatch?.province) {
+        provinceStr = orgMatch.province.trim()
+        regionStr = orgMatch.region
+        healthNum = orgMatch.health_district
+      } else {
+        provinceStr = (data.province || "").trim()
+        if (!provinceStr) {
+          toast({
+            title: "กรุณาเลือกจังหวัด",
+            description: "ชื่อลูกค้าไม่ตรง Customer Register — เลือกจังหวัดและเขตจากรายการด้านล่าง",
+            variant: "destructive",
+          })
+          return
+        }
+        const g = getProvinceInfo(provinceStr)
+        regionStr = g?.region
+        healthNum = g?.healthDistrict
+      }
     }
+
     const selectedModel = modelOptions.find((m) => m.model === data.product_model)
-    const geo = customerMode === "new" && data.province?.trim() ? getProvinceInfo(data.province.trim()) : undefined
     const newDeal: Deal = {
       id: Date.now().toString(),
       deal_no: `DEAL-${String(deals.length + 1).padStart(3, "0")}`,
@@ -180,9 +253,9 @@ export default function PipelinePage() {
       owner: isAdmin ? (data.owner ?? "") : (currentOwnerName || data.owner || ""),
       manufacturer: data.manufacturer?.trim() || selectedModel?.manufacturer || undefined,
       customer_segment: customerMode === "new" ? data.customer_segment : undefined,
-      province: customerMode === "new" ? data.province?.trim() : undefined,
-      region: customerMode === "new" && geo ? geo.region : undefined,
-      health_district: customerMode === "new" && geo ? geo.healthDistrict : undefined,
+      province: provinceStr,
+      region: regionStr,
+      health_district: healthNum,
     }
     const nextDeals = [newDeal, ...deals]
     // Persist ดีลก่อน แล้วค่อยแตะ se_settings — ไม่งั้น as-store-updated จาก settings จะ sync ดีล
@@ -212,12 +285,27 @@ export default function PipelinePage() {
   }
 
   function moveStage(dealId: string, newStage: string) {
-    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d))
+    setDeals((prev) =>
+      prev.map((d) =>
+        d.id === dealId
+          ? { ...d, stage: newStage, probability: suggestedProbabilityForStage(newStage, stages) }
+          : d,
+      ),
+    )
+  }
+
+  function updateDealProbability(dealId: string, raw: number) {
+    const p = Math.min(100, Math.max(0, Number.isFinite(raw) ? raw : 0))
+    setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, probability: p } : d)))
   }
 
   function requestBookingForDeal(deal: Deal) {
-    if (deal.probability <= 7) {
-      toast({ title: "ยังขอ Booking ไม่ได้", description: "ดีลต้องมีโอกาสมากกว่า 7%", variant: "destructive" })
+    if (deal.probability < BOOKING_MIN_PROBABILITY) {
+      toast({
+        title: "ยังขอ Booking ไม่ได้",
+        description: `ดีลต้องมีโอกาสอย่างน้อย ${BOOKING_MIN_PROBABILITY}% (ปรับที่ช่องโอกาสบนการ์ด)`,
+        variant: "destructive",
+      })
       return
     }
     const all = readStockBookingsLedger<StockBookingRequest[]>([])
@@ -323,10 +411,29 @@ export default function PipelinePage() {
                           {d.health_district != null ? ` · ${formatHealthDistrictLabel(d.health_district)}` : ""}
                         </p>
                       )}
-                      <div className="flex items-center justify-between pt-1 border-t">
+                      <div className="flex items-center justify-between pt-1 border-t gap-2">
                         <span className="text-sm font-medium text-primary">{formatCurrency(d.value)}</span>
-                        <Badge variant="outline" className="text-xs">{d.probability}%</Badge>
+                        <div className="flex flex-col items-end gap-0.5 shrink-0">
+                          <Label className="text-[10px] text-muted-foreground font-normal">โอกาส %</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={100}
+                            className="h-7 w-16 text-xs text-right px-1.5"
+                            value={d.probability}
+                            onChange={(e) => updateDealProbability(d.id, Number(e.target.value))}
+                            aria-label="โอกาสปิดการขาย"
+                          />
+                        </div>
                       </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        เปลี่ยน Stage ด้านล่างจะปรับโอกาสแนะนำให้ — แก้ช่องโอกาสได้เสมอ
+                        {d.probability >= BOOKING_MIN_PROBABILITY ? (
+                          <span className="text-emerald-700"> · ขอ Booking ได้ (≥{BOOKING_MIN_PROBABILITY}%)</span>
+                        ) : (
+                          <span> · Booking ต้องโอกาส ≥{BOOKING_MIN_PROBABILITY}%</span>
+                        )}
+                      </p>
                       <p className="text-xs text-muted-foreground">ECD: {d.expected_close_date}</p>
                       {getBookingStatus(d.id) && (
                         <Badge
@@ -336,7 +443,7 @@ export default function PipelinePage() {
                           Booking: {getBookingStatus(d.id)?.request_status}
                         </Badge>
                       )}
-                      {d.probability > 7 && (
+                      {d.probability >= BOOKING_MIN_PROBABILITY && (
                         <button
                           type="button"
                           onClick={() => requestBookingForDeal(d)}
@@ -345,7 +452,7 @@ export default function PipelinePage() {
                           ขอ Booking ไป Stock
                         </button>
                       )}
-                      {/* Quick move */}
+                      {/* Quick move — โอกาสจะถูกปรับตาม Stage แนะนำ (แก้ที่ช่องโอกาสได้) */}
                       <Select onValueChange={v => moveStage(d.id, v)} value={d.stage}>
                         <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -376,8 +483,29 @@ export default function PipelinePage() {
               <div className="space-y-1.5">
                 <Label>ลูกค้า *</Label>
                 <div className="flex items-center gap-2 mb-1">
-                  <Button type="button" variant={customerMode === "existing" ? "default" : "outline"} size="sm" onClick={() => setCustomerMode("existing")}>ลูกค้าเดิม</Button>
-                  <Button type="button" variant={customerMode === "new" ? "default" : "outline"} size="sm" onClick={() => setCustomerMode("new")}>ลูกค้าใหม่</Button>
+                  <Button
+                    type="button"
+                    variant={customerMode === "existing" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setCustomerMode("existing")
+                      setValue("province", "")
+                    }}
+                  >
+                    ลูกค้าเดิม
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={customerMode === "new" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setCustomerMode("new")
+                      setValue("province", "")
+                      setValue("customer_segment", "public_hospital")
+                    }}
+                  >
+                    ลูกค้าใหม่
+                  </Button>
                 </div>
                 {customerMode === "existing" ? (
                   <Select onValueChange={v => setValue("customer_name", v)}>
@@ -394,35 +522,39 @@ export default function PipelinePage() {
                 )}
               </div>
               {customerMode === "new" && (
-                <>
-                  <div className="col-span-2 space-y-2">
-                    <Label>ประเภทลูกค้า (ลูกค้าใหม่)</Label>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={customerSegment === "public_hospital" ? "default" : "outline"}
-                        onClick={() => setValue("customer_segment", "public_hospital")}
-                      >
-                        โรงพยาบาลภาครัฐ
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={customerSegment === "other" ? "default" : "outline"}
-                        onClick={() => setValue("customer_segment", "other")}
-                      >
-                        อื่นๆ (คลินิก / เอกชน / ฯลฯ)
-                      </Button>
-                    </div>
+                <div className="col-span-2 space-y-2">
+                  <Label>ประเภทลูกค้า (ลูกค้าใหม่)</Label>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={customerSegment === "public_hospital" ? "default" : "outline"}
+                      onClick={() => setValue("customer_segment", "public_hospital")}
+                    >
+                      โรงพยาบาลภาครัฐ
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={customerSegment === "other" ? "default" : "outline"}
+                      onClick={() => setValue("customer_segment", "other")}
+                    >
+                      อื่นๆ (คลินิก / เอกชน / ฯลฯ)
+                    </Button>
                   </div>
-                  <div className="col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                </div>
+              )}
+              {(customerMode === "new" || customerMode === "existing") && (
+                <div className="col-span-2 space-y-2">
+                  {customerMode === "existing" && (
+                    <p className="text-[11px] text-muted-foreground leading-snug">
+                      ชื่อตรง <strong>Customer Register (AS)</strong> จะเติมจังหวัด/เขตอัตโนมัติ — ถ้าไม่ตรงให้เลือกจังหวัดเอง
+                    </p>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="space-y-1.5 sm:col-span-1">
                       <Label>จังหวัด *</Label>
-                      <Select
-                        value={watchProvince || undefined}
-                        onValueChange={(v) => setValue("province", v)}
-                      >
+                      <Select value={watchProvince || undefined} onValueChange={(v) => setValue("province", v)}>
                         <SelectTrigger>
                           <SelectValue placeholder="เลือกจังหวัด" />
                         </SelectTrigger>
@@ -448,16 +580,23 @@ export default function PipelinePage() {
                       />
                     </div>
                   </div>
-                </>
+                </div>
               )}
               <div className="space-y-1.5">
                 <Label>Stage</Label>
-                <Select onValueChange={v => setValue("stage", v as any)} defaultValue={stages[0] ?? "lead"}>
+                <Select
+                  value={(watchStage || stages[0]) ?? "lead"}
+                  onValueChange={(v) => {
+                    setValue("stage", v)
+                    setValue("probability", suggestedProbabilityForStage(v, stages))
+                  }}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {stages.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-muted-foreground">เปลี่ยน Stage จะตั้งโอกาสแนะนำให้ — แก้ที่ช่องโอกาสด้านล่างได้</p>
               </div>
               <div className="space-y-1.5">
                 <Label>Product Model *</Label>
@@ -486,6 +625,9 @@ export default function PipelinePage() {
               <div className="space-y-1.5">
                 <Label>โอกาส (%)</Label>
                 <Input type="number" min={0} max={100} {...register("probability", { valueAsNumber: true })} />
+                <p className="text-[11px] text-muted-foreground">
+                  ขอ Booking ไป Stock เมื่อโอกาส ≥ {BOOKING_MIN_PROBABILITY}%
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label>ECD</Label>

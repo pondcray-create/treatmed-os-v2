@@ -72,7 +72,7 @@ const NAV_GROUPS: NavGroup[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { profile, signOut } = useAuth();
+  const { profile, loading, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const role = profile?.role ?? "as_service";
@@ -182,9 +182,13 @@ export function Sidebar() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-gray-900 truncate">
-              {profile?.full_name ?? "Loading..."}
+              {loading
+                ? "กำลังโหลด…"
+                : profile?.full_name ?? "ยังไม่ได้เข้าสู่ระบบ"}
             </p>
-            <p className="text-xs text-gray-400 truncate">{profile?.role}</p>
+            <p className="text-xs text-gray-400 truncate">
+              {loading ? "…" : profile?.role ?? "—"}
+            </p>
           </div>
         </div>
         <button

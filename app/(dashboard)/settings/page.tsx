@@ -113,6 +113,7 @@ function SettingsPageContent() {
     calibration_statuses: "",
     se_customers: "",
     se_owners: "",
+    se_stages: "",
     product_code: "",
     product_label: "",
     product_manufacturer: "",
@@ -266,6 +267,7 @@ function SettingsPageContent() {
     writeSESettings({
       se_customers: normalizeUnique(seSettings.se_customers),
       se_owners: normalizeUnique(seSettings.se_owners),
+      se_stages: normalizeUnique(seSettings.se_stages),
     })
     setSavedKey("se")
     window.setTimeout(() => setSavedKey(null), 2000)
@@ -378,6 +380,7 @@ function SettingsPageContent() {
     () => [
       { key: "se_customers" as const, label: "SE Customers", hint: "Customer options used by SE pages" },
       { key: "se_owners" as const, label: "SE Owners", hint: "Sales owner options used by SE pages" },
+      { key: "se_stages" as const, label: "SE Stages", hint: "Pipeline stage options used by SE pages" },
     ],
     [],
   )

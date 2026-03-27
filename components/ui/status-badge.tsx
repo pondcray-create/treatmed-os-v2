@@ -39,8 +39,9 @@ export function ServiceStatusBadge({ status }: { status: ServiceStatus }) {
   return <Badge variant={config.variant as any}>{config.label}</Badge>
 }
 
-export function DealStageBadge({ stage }: { stage: DealStage }) {
-  const config = dealStageMap[stage] ?? { label: stage, variant: "secondary" as const }
+export function DealStageBadge({ stage }: { stage: string }) {
+  const known = dealStageMap[stage as DealStage]
+  const config = known ?? { label: stage, variant: "secondary" as const }
   return <Badge variant={config.variant as any}>{config.label}</Badge>
 }
 
