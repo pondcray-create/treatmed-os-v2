@@ -53,6 +53,7 @@ import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/
 import { newId } from "@/lib/new-id"
 import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
 import { getStockPatternManufacturers, getStockPatternModelsForManufacturer } from "@/lib/product-catalog-options"
+import { getReceiveModuleSpec } from "@/lib/receive-module-spec"
 import { Badge } from "@/components/ui/badge"
 
 type StockCategory = "spare_part" | "module" | "sellable" | "consumable" | "tool" | "demo"
@@ -362,45 +363,6 @@ function upsertProactiveCalibrationFromInputProduct(tx: StockTransaction) {
     next = existing ? next.map((a) => (a.id === existing.id ? record : a)) : [record, ...next]
   }
   writeProactiveCalibrationAssets(next)
-}
-
-/**
- * กำหนดช่อง SN component ตอนรับเข้า ตามชื่อรุ่น (Product Model)
- * - IDA6* → บังคับ SN Display + SN Module 1..4 (ครบทุก module)
- * - X2* → บังคับ SN เครื่องหลัก + SN sensor ตามชุด
- * - X2 Solo* → บังคับ SN เครื่องหลัก + SN RF Sensor
- * - ProSim8 (+P) + SPOT… / ProSim4 + SPOTLIGHT → บังคับ SN companion เดิม
- */
-function getReceiveModuleSpec(model: string): {
-  mainLabel: string
-  componentLabels: string[]
-} {
-  const m = model.trim()
-  if (/IDA6/i.test(m)) {
-    return {
-      mainLabel: "Serial จอ (Display)",
-      componentLabels: ["Module 1", "Module 2", "Module 3", "Module 4"],
-    }
-  }
-  if (/X2\s*Solo/i.test(m)) {
-    return {
-      mainLabel: "Serial เครื่องหลัก (X2 Solo)",
-      componentLabels: ["R/F Sensor"],
-    }
-  }
-  if (/X2/i.test(m)) {
-    return {
-      mainLabel: "Serial เครื่องหลัก (X2)",
-      componentLabels: ["R/F Sensor", "CT Sensor", "Light Sensor", "MAM Sensor", "Survey Sensor"],
-    }
-  }
-  if (/ProSim8P?\s*\+\s*SPOT/i.test(m)) {
-    return { mainLabel: "Serial เครื่องหลัก", componentLabels: ["SPOT Module"] }
-  }
-  if (/ProSim4\s*\+\s*SPOTLIGHT/i.test(m)) {
-    return { mainLabel: "Serial เครื่องหลัก", componentLabels: ["SPOTLIGHT"] }
-  }
-  return { mainLabel: "Serial เครื่องหลัก", componentLabels: [] }
 }
 
 function ReturnDemoDialog({
@@ -2053,6 +2015,8 @@ export default function StockPage() {
   const [claimReceiveTarget, setClaimReceiveTarget] = useState<string>("")
   const [claimReplacementSerial, setClaimReplacementSerial] = useState("")
   const [claimReplacementNote, setClaimReplacementNote] = useState("")
+  const [claimFilterScope, setClaimFilterScope] = useState<"all" | "whole_unit" | "module" | "sensor">("all")
+  const [claimSearchQuery, setClaimSearchQuery] = useState("")
 
   const lowStock = items.filter(i => i.qty < i.min_qty && i.status === "in_stock")
   const demoOnLoan = items.filter(i => i.category === "demo" && i.status === "on_loan")
@@ -2060,6 +2024,30 @@ export default function StockPage() {
   const reservedItems = items.filter((i) => i.status === "reserved")
   const seBookingRequests = bookings.filter((b) => b.source === "se_deal")
   const activeClaimCases = claimCases.filter((c) => c.status !== "closed")
+  const filteredActiveClaimCases = useMemo(() => {
+    const q = claimSearchQuery.trim().toLowerCase()
+    return activeClaimCases.filter((c) => {
+      const scope = c.claim_scope ?? "whole_unit"
+      if (claimFilterScope !== "all" && scope !== claimFilterScope) return false
+      if (!q) return true
+      const hay = [
+        c.id,
+        c.old_serial_number,
+        c.parent_serial_number,
+        c.replacement_serial_number,
+        c.claim_reference,
+        c.source_job_no,
+        c.model,
+        c.customer_org,
+        c.claimed_component_label,
+        c.failure_reason,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [activeClaimCases, claimFilterScope, claimSearchQuery])
   const soldItems = items.filter((i) => i.status === "sold")
   const today = todayYmdInBangkok()
 
@@ -2958,6 +2946,12 @@ export default function StockPage() {
     const sn = replacementSN.trim()
     if (!sn) return
     const now = new Date().toISOString()
+    const scope = claim.claim_scope ?? "whole_unit"
+    const partHint =
+      scope !== "whole_unit" && claim.claimed_component_label
+        ? ` · ${claim.claimed_component_label}`
+        : ""
+    const parentHint = claim.parent_serial_number ? ` · parent SN ${claim.parent_serial_number}` : ""
     const replacementDispatch = {
       id: newId("disp"),
       customer_org: claim.customer_org,
@@ -2965,7 +2959,7 @@ export default function StockPage() {
       item_name: `${claim.model} (Replacement Claim)`,
       serial_number: sn,
       job_type: "commissioning" as const,
-      symptom: `[CLAIM_CASE:${claim.id}] Replacement from overseas for old SN ${claim.old_serial_number}. ${claim.failure_reason}`,
+      symptom: `[CLAIM_CASE:${claim.id}] Replacement from overseas for claimed SN ${claim.old_serial_number}${partHint}${parentHint}. ${claim.failure_reason}`,
       dispatched_by: "Stock Team",
       dispatched_at: now,
     }
@@ -4157,14 +4151,61 @@ export default function StockPage() {
               </p>
             </div>
           </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[160px]">
+              <label htmlFor="claim-scope-filter" className="block text-xs font-semibold text-gray-600 mb-1">
+                ประเภท Claim
+              </label>
+              <select
+                id="claim-scope-filter"
+                value={claimFilterScope}
+                onChange={(e) => setClaimFilterScope(e.target.value as typeof claimFilterScope)}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+              >
+                <option value="all">ทั้งหมด</option>
+                <option value="whole_unit">ทั้งเครื่อง</option>
+                <option value="module">Module / ชุดคู่</option>
+                <option value="sensor">Sensor</option>
+              </select>
+            </div>
+            <div className="flex-1 min-w-[200px] max-w-md">
+              <label htmlFor="claim-sn-search" className="block text-xs font-semibold text-gray-600 mb-1">
+                ค้นหา SN / Job / ลูกค้า
+              </label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  id="claim-sn-search"
+                  value={claimSearchQuery}
+                  onChange={(e) => setClaimSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
+                  placeholder="SN เคลม, SN หลัก, Replacement, Job No, รุ่น..."
+                />
+              </div>
+            </div>
+          </div>
           {activeClaimCases.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-gray-300">
               <AlertTriangle className="h-16 w-16 mb-3 opacity-30" />
               <p className="text-sm">ยังไม่มีเคส Claim ที่เปิดอยู่</p>
             </div>
+          ) : filteredActiveClaimCases.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+              <p className="text-sm">ไม่มีเคสที่ตรงกับตัวกรองหรือคำค้น</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setClaimFilterScope("all")
+                  setClaimSearchQuery("")
+                }}
+                className="mt-2 text-xs font-bold text-indigo-600 underline"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {activeClaimCases.map((c) => (
+              {filteredActiveClaimCases.map((c) => (
                 <div key={c.id} className="p-5 bg-white rounded-3xl border-2 border-indigo-200 shadow-sm">
                   <div className="flex items-start justify-between mb-3 gap-2">
                     <div>
@@ -4175,7 +4216,23 @@ export default function StockPage() {
                       {c.status}
                     </Badge>
                   </div>
-                  <p className="text-xs text-gray-600 font-mono">Old SN: {c.old_serial_number}</p>
+                  <p className="text-xs text-gray-600">
+                    ขอบเขต:{" "}
+                    <span className="font-semibold">
+                      {c.claim_scope === "module"
+                        ? "Module / ชุดคู่"
+                        : c.claim_scope === "sensor"
+                          ? "Sensor"
+                          : "ทั้งเครื่อง"}
+                    </span>
+                  </p>
+                  {c.parent_serial_number && (
+                    <p className="text-xs text-gray-600 font-mono mt-1">SN หลัก: {c.parent_serial_number}</p>
+                  )}
+                  <p className="text-xs text-gray-600 font-mono mt-1">SN เคลม: {c.old_serial_number}</p>
+                  {c.claimed_component_label && (
+                    <p className="text-xs text-gray-600 mt-1">ชิ้นที่เคลม: {c.claimed_component_label}</p>
+                  )}
                   <p className="text-xs text-gray-600 mt-1">เหตุผล: {c.failure_reason}</p>
                   {c.claim_reference && <p className="text-xs text-gray-600 mt-1">Claim Ref: {c.claim_reference}</p>}
                   {c.replacement_serial_number && (

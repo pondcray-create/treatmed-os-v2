@@ -12,7 +12,9 @@ import {
   appendStockNotification,
   appendEquipmentHistory,
   appendStockDispatch,
+  appendCommissioningClaimCase,
   readEquipmentHistory,
+  readCommissioningClaimCases,
   readIncomingSERequests,
   readJobs,
   readJobsVersion,
@@ -31,6 +33,7 @@ import {
   writeOrganizations,
   writeProactiveCalibrationAssets,
   writeStockDispatches,
+  writeCommissioningClaimCases,
   type ASProactiveCalibrationAsset,
   type ASServiceJob as ServiceJob,
   type ASStockDispatch as StockDispatch,
@@ -39,7 +42,9 @@ import {
   type ASOrganization,
   type ASPartsRequest,
   type ASEquipmentHistoryEntry,
+  type ASCommissioningClaimCase,
 } from "@/lib/mock/as-store"
+import { filterModuleClaimLabels, filterSensorClaimLabels, getReceiveModuleSpec } from "@/lib/receive-module-spec"
 import {
   STATUS_FLOW,
   getCalibrationAlertLevel,
@@ -173,24 +178,51 @@ function CancelJobDialog({
   )
 }
 
+type ClaimScopeUI = "whole_unit" | "module" | "sensor"
+
 function CommissioningFailDialog({
   job,
   reason,
+  claimRef,
+  claimScope,
+  componentLabel,
+  componentSerial,
   onReasonChange,
+  onClaimRefChange,
+  onClaimScopeChange,
+  onComponentLabelChange,
+  onComponentSerialChange,
   onClose,
   onConfirm,
 }: {
   job: ServiceJob
   reason: string
+  claimRef: string
+  claimScope: ClaimScopeUI
+  componentLabel: string
+  componentSerial: string
   onReasonChange: (value: string) => void
+  onClaimRefChange: (value: string) => void
+  onClaimScopeChange: (value: ClaimScopeUI) => void
+  onComponentLabelChange: (value: string) => void
+  onComponentSerialChange: (value: string) => void
   onClose: () => void
   onConfirm: () => void
 }) {
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm bg-white"
+  const spec = getReceiveModuleSpec(job.model)
+  const moduleOpts = filterModuleClaimLabels(spec.componentLabels)
+  const sensorOpts = filterSensorClaimLabels(spec.componentLabels)
+  const scopeOpts =
+    claimScope === "module" ? moduleOpts : claimScope === "sensor" ? sensorOpts : []
+  const needsComponent = claimScope !== "whole_unit"
+  const confirmDisabled =
+    !reason.trim() ||
+    (needsComponent && (!componentLabel.trim() || !componentSerial.trim()))
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 p-6">
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-bold text-lg text-amber-700">Commissioning ไม่ผ่าน</h3>
           <button aria-label="ปิดหน้าต่าง" onClick={onClose} className="p-1.5 rounded-xl hover:bg-gray-100">
@@ -200,6 +232,7 @@ function CommissioningFailDialog({
         <div className="mb-3 p-3 rounded-xl border border-amber-100 bg-amber-50">
           <p className="text-xs text-amber-700">Job</p>
           <p className="text-sm font-semibold text-gray-900">{job.job_no} · {job.model}</p>
+          <p className="text-xs font-mono text-amber-800 mt-1">SN หลัก: {job.serial_number}</p>
         </div>
         <label htmlFor="commissioning-fail-reason" className="block text-sm font-medium text-gray-700 mb-1.5">
           เหตุผลที่ไม่ผ่าน *
@@ -213,6 +246,94 @@ function CommissioningFailDialog({
           placeholder="เช่น ค่า pressure leak เกินเกณฑ์, flow sensor ผิดพลาด"
         />
         <p className="text-xs text-gray-500 mt-1.5">ระบบจะส่งกลับ Stock พร้อมเหตุผลนี้อัตโนมัติ</p>
+        <p className="block text-sm font-medium text-gray-700 mt-3 mb-1.5">ขอบเขตการเคลม</p>
+        <div className="flex flex-col gap-2 mb-3">
+          {(
+            [
+              ["whole_unit", "ทั้งเครื่อง (SN หลักของงาน)"] as const,
+              ["module", "เฉพาะ Module / ชุดคู่ (เช่น IDA6 module, SPOT)"] as const,
+              ["sensor", "เฉพาะ Sensor (เช่น X2 R/F, CT, …)"] as const,
+            ] as const
+          ).map(([val, label]) => (
+            <label key={val} className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer">
+              <input
+                type="radio"
+                name="claim-scope"
+                checked={claimScope === val}
+                onChange={() => {
+                  onClaimScopeChange(val)
+                  onComponentLabelChange("")
+                  onComponentSerialChange("")
+                }}
+                className="rounded-full border-gray-300 text-amber-600 focus:ring-amber-500"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {needsComponent && (
+          <div className="rounded-xl border border-amber-100 bg-amber-50/80 p-3 space-y-2 mb-3">
+            <p className="text-xs text-amber-800">
+              ระบุชิ้นที่เสียและ SN ของชิ้นนั้น (Stock / Claim dashboard จะกรองตามประเภทและค้นหา SN ได้)
+            </p>
+            {scopeOpts.length > 0 ? (
+              <>
+                <label htmlFor="claim-component-label" className="block text-xs font-medium text-gray-600">
+                  Component *
+                </label>
+                <select
+                  id="claim-component-label"
+                  value={componentLabel}
+                  onChange={(e) => onComponentLabelChange(e.target.value)}
+                  className={inp}
+                >
+                  <option value="">— เลือก —</option>
+                  {scopeOpts.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <>
+                <label htmlFor="claim-component-label-free" className="block text-xs font-medium text-gray-600">
+                  ชื่อชิ้นที่เคลม (ระบุเอง) *
+                </label>
+                <input
+                  id="claim-component-label-free"
+                  value={componentLabel}
+                  onChange={(e) => onComponentLabelChange(e.target.value)}
+                  className={inp}
+                  placeholder="เช่น Module 2, CT Sensor"
+                />
+              </>
+            )}
+            <label htmlFor="claim-component-serial" className="block text-xs font-medium text-gray-600">
+              Serial ของชิ้นที่เคลม *
+            </label>
+            <input
+              id="claim-component-serial"
+              value={componentSerial}
+              onChange={(e) => onComponentSerialChange(e.target.value)}
+              className={`${inp} font-mono`}
+              placeholder="SN ชิ้นที่เสีย"
+            />
+          </div>
+        )}
+        <label htmlFor="commissioning-claim-ref" className="block text-sm font-medium text-gray-700 mt-3 mb-1.5">
+          Claim/RMA Reference (ถ้ามี)
+        </label>
+        <input
+          id="commissioning-claim-ref"
+          value={claimRef}
+          onChange={(e) => onClaimRefChange(e.target.value)}
+          className={inp}
+          placeholder="เช่น CLM-FBC-2026-001"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          ระบบสร้างเคส Claim ต่างประเทศแบบ end-to-end — SN ที่อ้างอิงเคลมจะเป็นชิ้นที่เลือก (หรือ SN หลักถ้าเคลมทั้งเครื่อง)
+        </p>
         <div className="flex gap-3 mt-4">
           <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
             ปิด
@@ -220,7 +341,7 @@ function CommissioningFailDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={!reason.trim()}
+            disabled={confirmDisabled}
             className="flex-1 py-2.5 rounded-xl bg-amber-500 disabled:bg-gray-300 text-white text-sm font-bold hover:bg-amber-600"
           >
             ยืนยันส่งกลับ Stock
@@ -604,11 +725,27 @@ function FromStockTab({
 function CommissioningWorkTab({
   dispatches,
   jobs,
+  claimCases,
+  claimReceiveTarget,
+  claimReplacementSerial,
+  claimReplacementNote,
+  onChangeClaimReceiveTarget,
+  onChangeClaimReplacementSerial,
+  onChangeClaimReplacementNote,
+  onReceiveReplacement,
   onAcceptDispatch,
   onOpenJob,
 }: {
   dispatches: StockDispatch[]
   jobs: ServiceJob[]
+  claimCases: ASCommissioningClaimCase[]
+  claimReceiveTarget: string
+  claimReplacementSerial: string
+  claimReplacementNote: string
+  onChangeClaimReceiveTarget: (id: string) => void
+  onChangeClaimReplacementSerial: (value: string) => void
+  onChangeClaimReplacementNote: (value: string) => void
+  onReceiveReplacement: (claim: ASCommissioningClaimCase, replacementSN: string, note: string) => void
   onAcceptDispatch: (d: StockDispatch) => void
   onOpenJob: (j: ServiceJob) => void
 }) {
@@ -618,6 +755,7 @@ function CommissioningWorkTab({
   const activeJobs = jobs
     .filter((j) => isCommissioningTestJob(j))
     .filter((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก")
+  const activeClaims = claimCases.filter((c) => c.status !== "closed")
 
   return (
     <div className="space-y-10">
@@ -704,6 +842,89 @@ function CommissioningWorkTab({
                   <span className="text-xs text-gray-400">{j.customer_org}</span>
                 </div>
               </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-base font-bold text-gray-900 mb-1">Claim ต่างประเทศ (Commissioning ไม่ผ่าน)</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          วงจร End-to-End: Fail {"->"} Claim Overseas {"->"} Receive Replacement SN {"->"} Commissioning ใหม่ {"->"} Close
+        </p>
+        {activeClaims.length === 0 ? (
+          <p className="text-sm text-gray-400 py-8 text-center border border-gray-100 rounded-2xl">ยังไม่มีเคส Claim ที่เปิดอยู่</p>
+        ) : (
+          <div className="space-y-3">
+            {activeClaims.map((c) => (
+              <div key={c.id} className="rounded-2xl border border-orange-200 bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold text-sm text-gray-900">{c.model} · {c.customer_org}</p>
+                  <Pill label={c.status} color="bg-orange-100 text-orange-700" />
+                </div>
+                <p className="mt-1 text-xs text-gray-600">
+                  ขอบเขต:{" "}
+                  <span className="font-semibold">
+                    {c.claim_scope === "module"
+                      ? "Module / ชุดคู่"
+                      : c.claim_scope === "sensor"
+                        ? "Sensor"
+                        : "ทั้งเครื่อง"}
+                  </span>
+                </p>
+                {c.parent_serial_number && (
+                  <p className="mt-1 text-xs text-gray-600 font-mono">SN หลัก: {c.parent_serial_number}</p>
+                )}
+                <p className="mt-1 text-xs text-gray-600 font-mono">SN เคลม: {c.old_serial_number}</p>
+                {c.claimed_component_label && (
+                  <p className="mt-1 text-xs text-gray-600">ชิ้นที่เคลม: {c.claimed_component_label}</p>
+                )}
+                <p className="mt-1 text-xs text-gray-600">เหตุขัดข้อง: {c.failure_reason}</p>
+                {c.claim_reference && <p className="mt-1 text-xs text-gray-600">Claim Ref: {c.claim_reference}</p>}
+                {c.replacement_serial_number && (
+                  <p className="mt-1 text-xs text-emerald-700 font-mono">Replacement SN: {c.replacement_serial_number}</p>
+                )}
+                {c.replacement_job_no && (
+                  <p className="mt-1 text-xs text-blue-700">Replacement Job: {c.replacement_job_no}</p>
+                )}
+                {c.status === "sent_overseas" && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-[1.4fr_2fr_auto]">
+                    <input
+                      value={claimReceiveTarget === c.id ? claimReplacementSerial : ""}
+                      onFocus={() => onChangeClaimReceiveTarget(c.id)}
+                      onChange={(e) => {
+                        onChangeClaimReceiveTarget(c.id)
+                        onChangeClaimReplacementSerial(e.target.value)
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm font-mono"
+                      placeholder="New Replacement SN"
+                    />
+                    <input
+                      value={claimReceiveTarget === c.id ? claimReplacementNote : ""}
+                      onFocus={() => onChangeClaimReceiveTarget(c.id)}
+                      onChange={(e) => {
+                        onChangeClaimReceiveTarget(c.id)
+                        onChangeClaimReplacementNote(e.target.value)
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                      placeholder="หมายเหตุการรับเข้า"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onReceiveReplacement(
+                          c,
+                          claimReceiveTarget === c.id ? claimReplacementSerial : "",
+                          claimReceiveTarget === c.id ? claimReplacementNote : "",
+                        )
+                      }
+                      className="px-3 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600"
+                    >
+                      รับเครื่องทดแทน
+                    </button>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -888,6 +1109,14 @@ function ServiceRequestPageContent() {
   const [cancelActionPlan, setCancelActionPlan] = useState("")
   const [commissioningFailDialogJob, setCommissioningFailDialogJob] = useState<ServiceJob | null>(null)
   const [commissioningFailReason, setCommissioningFailReason] = useState("")
+  const [commissioningFailClaimRef, setCommissioningFailClaimRef] = useState("")
+  const [commissioningFailScope, setCommissioningFailScope] = useState<ClaimScopeUI>("whole_unit")
+  const [commissioningFailComponentLabel, setCommissioningFailComponentLabel] = useState("")
+  const [commissioningFailComponentSerial, setCommissioningFailComponentSerial] = useState("")
+  const [commissioningClaimCases, setCommissioningClaimCases] = useState<ASCommissioningClaimCase[]>([])
+  const [claimReceiveTarget, setClaimReceiveTarget] = useState<string>("")
+  const [claimReplacementSerial, setClaimReplacementSerial] = useState("")
+  const [claimReplacementNote, setClaimReplacementNote] = useState("")
   const [partsReqPartName, setPartsReqPartName] = useState("")
   const [partsReqQty, setPartsReqQty] = useState(1)
   const [partsReqNote, setPartsReqNote] = useState("")
@@ -908,6 +1137,7 @@ function ServiceRequestPageContent() {
     setStockDispatches(loadedDispatches)
     setRepairToCalRequests(readRepairToCalRequests([]))
     setPartsRequests(readPartsRequests([]))
+    setCommissioningClaimCases(readCommissioningClaimCases([]))
     setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
     setSelected(loadedJobs[0] ?? null)
     setHydrated(true)
@@ -943,11 +1173,17 @@ function ServiceRequestPageContent() {
 
   useEffect(() => {
     if (!hydrated) return
+    writeCommissioningClaimCases(commissioningClaimCases)
+  }, [commissioningClaimCases, hydrated])
+
+  useEffect(() => {
+    if (!hydrated) return
     const sync = () => {
       setStockDispatches(readStockDispatches([]))
       setJobs(readJobs([]))
       setRepairToCalRequests(readRepairToCalRequests([]))
       setPartsRequests(readPartsRequests([]))
+      setCommissioningClaimCases(readCommissioningClaimCases([]))
       setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
       setWorkflowSettings(readASWorkflowSettings())
       setEquipmentHistory(readEquipmentHistory([]))
@@ -962,6 +1198,7 @@ function ServiceRequestPageContent() {
       AS_STORE_KEYS.stockItemsVersion,
       AS_STORE_KEYS.repairToCalRequests,
       AS_STORE_KEYS.partsRequests,
+      AS_STORE_KEYS.commissioningClaimCases,
       AS_STORE_KEYS.seIncomingRequests,
       AS_STORE_KEYS.asWorkflowSettings,
       AS_STORE_KEYS.equipmentHistory,
@@ -984,6 +1221,31 @@ function ServiceRequestPageContent() {
       window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [hydrated])
+
+  useEffect(() => {
+    if (!hydrated || commissioningClaimCases.length === 0) return
+    let changed = false
+    const next = commissioningClaimCases.map((c) => {
+      if (c.status === "closed" || !c.replacement_job_id) return c
+      const replacementJob = jobs.find((j) => j.id === c.replacement_job_id)
+      if (!replacementJob || replacementJob.status !== "ปิดงาน") return c
+      changed = true
+      appendEquipmentHistory({
+        id: newId("eh"),
+        serial_number: c.replacement_serial_number || replacementJob.serial_number,
+        model: replacementJob.model,
+        customer_org: replacementJob.customer_org,
+        job_id: replacementJob.id,
+        job_no: replacementJob.job_no,
+        event_kind: "claim_cycle_closed",
+        status: replacementJob.status,
+        message: `Claim cycle closed from old SN ${c.old_serial_number}`,
+        created_at: new Date().toISOString(),
+      })
+      return { ...c, status: "closed" as const, closed_at: new Date().toISOString() }
+    })
+    if (changed) setCommissioningClaimCases(next)
+  }, [hydrated, commissioningClaimCases, jobs])
 
   useEffect(() => {
     const onOnline = () => {
@@ -1281,10 +1543,23 @@ function ServiceRequestPageContent() {
     })
   }
 
-  function failCommissioningToRepair(job: ServiceJob, reasonInput?: string) {
+  function failCommissioningToRepair(
+    job: ServiceJob,
+    reasonInput?: string,
+    claimRefInput?: string,
+    claimOpts?: {
+      claim_scope: ClaimScopeUI
+      claimed_component_label?: string
+      claimed_component_serial?: string
+    },
+  ) {
     if (!isCommissioningTestJob(job)) return
     const reason = (reasonInput || "").trim()
     if (!reason || !reason.trim()) return
+    const scope = claimOpts?.claim_scope ?? "whole_unit"
+    const compLabel = (claimOpts?.claimed_component_label || "").trim()
+    const compSerial = (claimOpts?.claimed_component_serial || "").trim()
+    if (scope !== "whole_unit" && (!compLabel || !compSerial)) return
     const updated: ServiceJob = {
       ...job,
       status: "ยกเลิก",
@@ -1325,6 +1600,38 @@ function ServiceRequestPageContent() {
       event_kind: "commissioning_failed",
       status: "ยกเลิก",
       message: `Commissioning failed, return to Stock: ${reason.trim()}`,
+      created_at: new Date().toISOString(),
+    })
+    const claimCase: ASCommissioningClaimCase = {
+      id: newId("clm"),
+      source_job_id: job.id,
+      source_job_no: job.job_no,
+      customer_org: job.customer_org,
+      customer_name: job.customer_name,
+      manufacturer: job.manufacturer,
+      model: job.model,
+      claim_scope: scope,
+      parent_serial_number: scope !== "whole_unit" ? job.serial_number : undefined,
+      old_serial_number: scope === "whole_unit" ? job.serial_number : compSerial,
+      claimed_component_label: scope !== "whole_unit" ? compLabel : undefined,
+      failure_reason: reason.trim(),
+      claim_reference: claimRefInput?.trim() || undefined,
+      status: "sent_overseas",
+      failed_at: new Date().toISOString(),
+      sent_overseas_at: new Date().toISOString(),
+    }
+    appendCommissioningClaimCase(claimCase)
+    setCommissioningClaimCases((prev) => [claimCase, ...prev.filter((x) => x.id !== claimCase.id)])
+    appendEquipmentHistory({
+      id: newId("eh"),
+      serial_number: claimCase.old_serial_number,
+      model: job.model,
+      customer_org: job.customer_org,
+      job_id: job.id,
+      job_no: job.job_no,
+      event_kind: "claim_overseas_created",
+      status: "ยกเลิก",
+      message: `Overseas claim (${scope})${claimCase.claim_reference ? ` ${claimCase.claim_reference}` : ""}: ${reason.trim()}${scope !== "whole_unit" ? ` · ${compLabel} SN ${compSerial}` : ""}`,
       created_at: new Date().toISOString(),
     })
   }
@@ -1368,6 +1675,60 @@ function ServiceRequestPageContent() {
         job.status,
       )
     }
+  }
+
+  function receiveClaimReplacement(claim: ASCommissioningClaimCase, replacementSN: string, note: string) {
+    const sn = replacementSN.trim()
+    if (!sn) return
+    const now = new Date().toISOString()
+    const scope = claim.claim_scope ?? "whole_unit"
+    const partHint =
+      scope !== "whole_unit" && claim.claimed_component_label
+        ? ` · ${claim.claimed_component_label}`
+        : ""
+    const parentHint = claim.parent_serial_number ? ` · parent SN ${claim.parent_serial_number}` : ""
+    const replacementDispatch: StockDispatch = {
+      id: newId("disp"),
+      customer_org: claim.customer_org,
+      customer_contact: claim.customer_name || "",
+      item_name: `${claim.model} (Replacement Claim)`,
+      serial_number: sn,
+      job_type: "commissioning",
+      symptom: `[CLAIM_CASE:${claim.id}] Replacement from overseas for claimed SN ${claim.old_serial_number}${partHint}${parentHint}. ${claim.failure_reason}`,
+      dispatched_by: "Stock Team",
+      dispatched_at: now,
+    }
+    appendStockDispatch(replacementDispatch)
+    setStockDispatches((prev) => [replacementDispatch, ...prev.filter((x) => x.id !== replacementDispatch.id)])
+    setCommissioningClaimCases((prev) =>
+      prev.map((c) =>
+        c.id === claim.id
+          ? {
+              ...c,
+              status: "replacement_received",
+              replacement_serial_number: sn,
+              replacement_dispatch_id: replacementDispatch.id,
+              replacement_received_at: now,
+              replacement_note: note.trim() || undefined,
+            }
+          : c,
+      ),
+    )
+    appendEquipmentHistory({
+      id: newId("eh"),
+      serial_number: claim.old_serial_number,
+      model: claim.model,
+      customer_org: claim.customer_org,
+      job_id: claim.source_job_id,
+      job_no: claim.source_job_no,
+      event_kind: "replacement_received",
+      status: "รอประเมิน",
+      message: `Replacement received SN ${sn}${note.trim() ? ` · ${note.trim()}` : ""}`,
+      created_at: now,
+    })
+    setClaimReceiveTarget("")
+    setClaimReplacementSerial("")
+    setClaimReplacementNote("")
   }
 
   function workflowCanonicalOrder(): ServiceJob["status"][] {
@@ -1603,6 +1964,33 @@ function ServiceRequestPageContent() {
       setFilterStatus("ทั้งหมด")
       setSelected(newJob)
       setMainTab("jobs")
+      const linkedClaim = commissioningClaimCases.find((c) => c.replacement_dispatch_id === d.id)
+      if (linkedClaim) {
+        setCommissioningClaimCases((prev) =>
+          prev.map((c) =>
+            c.id === linkedClaim.id
+              ? {
+                  ...c,
+                  status: "replacement_commissioning",
+                  replacement_job_id: newJob.id,
+                  replacement_job_no: newJob.job_no,
+                }
+              : c,
+          ),
+        )
+        appendEquipmentHistory({
+          id: newId("eh"),
+          serial_number: linkedClaim.replacement_serial_number || newJob.serial_number,
+          model: newJob.model,
+          customer_org: newJob.customer_org,
+          job_id: newJob.id,
+          job_no: newJob.job_no,
+          event_kind: "replacement_commissioning_started",
+          status: newJob.status,
+          message: `Replacement commissioning started (old SN ${linkedClaim.old_serial_number})`,
+          created_at: nowIso,
+        })
+      }
       const orgs = readOrganizations([])
       writeOrganizations(upsertOrganizationByName(orgs, d.customer_org, d.customer_contact))
       return
@@ -1807,8 +2195,13 @@ function ServiceRequestPageContent() {
           >
             {myQueueOnly ? "My Queue" : "ทุกคิว"}
           </button>
-          <button onClick={() => setMainTab("from_stock")} className="modern-button-primary premium-glow rounded-2xl">
-            <Plus className="h-4 w-4" /> รับงานผ่าน Stock (SOP)
+          <button
+            type="button"
+            onClick={() => setMainTab("from_stock")}
+            className="inline-flex items-center gap-2 whitespace-nowrap px-4 py-2.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white text-sm font-semibold shadow-sm hover:from-blue-600 hover:to-indigo-600 transition-all"
+          >
+            <Plus className="h-4 w-4" />
+            รับงานผ่าน Stock (SOP)
           </button>
         </div>
       </div>
@@ -1943,13 +2336,17 @@ function ServiceRequestPageContent() {
       )}
 
       {/* Main Tabs */}
-      <div className="flex gap-1 p-1 glass-panel rounded-2xl mb-5 w-fit">
+      <div className="flex gap-1.5 p-1.5 glass-panel rounded-2xl mb-5 w-full overflow-x-auto">
         {MAIN_TABS.map(t => (
           <button
             key={t.id}
             onClick={() => setMainTab(t.id)}
             data-active={mainTab === t.id}
-            className={`tab-premium relative px-4 py-2 rounded-xl text-sm font-semibold transition-all ${mainTab === t.id ? "text-gray-900" : "text-gray-500 hover:text-gray-700"}`}
+            className={`relative shrink-0 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all border ${
+              mainTab === t.id
+                ? "bg-white text-gray-900 border-blue-200 shadow-sm"
+                : "bg-transparent text-gray-500 border-transparent hover:text-gray-700 hover:bg-white/70"
+            }`}
           >
             {t.label}
             {t.badge != null && t.badge > 0 && (
@@ -2496,6 +2893,7 @@ function ServiceRequestPageContent() {
                       type="button"
                       onClick={() => {
                         setCommissioningFailReason("")
+                        setCommissioningFailClaimRef("")
                         setCommissioningFailDialogJob(sel)
                       }}
                       className="py-2.5 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 text-sm font-bold hover:bg-amber-100"
@@ -2761,6 +3159,14 @@ function ServiceRequestPageContent() {
           <CommissioningWorkTab
             dispatches={stockDispatches}
             jobs={jobs}
+            claimCases={commissioningClaimCases}
+            claimReceiveTarget={claimReceiveTarget}
+            claimReplacementSerial={claimReplacementSerial}
+            claimReplacementNote={claimReplacementNote}
+            onChangeClaimReceiveTarget={setClaimReceiveTarget}
+            onChangeClaimReplacementSerial={setClaimReplacementSerial}
+            onChangeClaimReplacementNote={setClaimReplacementNote}
+            onReceiveReplacement={receiveClaimReplacement}
             onAcceptDispatch={acceptStockDispatch}
             onOpenJob={(j) => {
               setSelected(j)
@@ -2817,15 +3223,35 @@ function ServiceRequestPageContent() {
         <CommissioningFailDialog
           job={commissioningFailDialogJob}
           reason={commissioningFailReason}
+          claimRef={commissioningFailClaimRef}
+          claimScope={commissioningFailScope}
+          componentLabel={commissioningFailComponentLabel}
+          componentSerial={commissioningFailComponentSerial}
           onReasonChange={setCommissioningFailReason}
+          onClaimRefChange={setCommissioningFailClaimRef}
+          onClaimScopeChange={setCommissioningFailScope}
+          onComponentLabelChange={setCommissioningFailComponentLabel}
+          onComponentSerialChange={setCommissioningFailComponentSerial}
           onClose={() => {
             setCommissioningFailDialogJob(null)
             setCommissioningFailReason("")
+            setCommissioningFailClaimRef("")
+            setCommissioningFailScope("whole_unit")
+            setCommissioningFailComponentLabel("")
+            setCommissioningFailComponentSerial("")
           }}
           onConfirm={() => {
-            failCommissioningToRepair(commissioningFailDialogJob, commissioningFailReason)
+            failCommissioningToRepair(commissioningFailDialogJob, commissioningFailReason, commissioningFailClaimRef, {
+              claim_scope: commissioningFailScope,
+              claimed_component_label: commissioningFailComponentLabel,
+              claimed_component_serial: commissioningFailComponentSerial,
+            })
             setCommissioningFailDialogJob(null)
             setCommissioningFailReason("")
+            setCommissioningFailClaimRef("")
+            setCommissioningFailScope("whole_unit")
+            setCommissioningFailComponentLabel("")
+            setCommissioningFailComponentSerial("")
           }}
         />
       )}

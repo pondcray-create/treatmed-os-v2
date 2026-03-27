@@ -258,9 +258,48 @@ export interface ASEquipmentHistoryEntry {
     | "job_cancelled"
     | "job_escalated"
     | "commissioning_failed"
+    | "claim_overseas_created"
+    | "replacement_received"
+    | "replacement_commissioning_started"
+    | "claim_cycle_closed"
   status?: ASJobStatus
   message: string
   created_at: string
+}
+
+export interface ASCommissioningClaimCase {
+  id: string
+  source_job_id: string
+  source_job_no: string
+  customer_org: string
+  customer_name?: string
+  manufacturer: string
+  model: string
+  /** SN ของชิ้นที่เคลม (ทั้งเครื่อง = SN หลักของงาน; แยก module/sensor = SN ของชิ้นนั้น) */
+  old_serial_number: string
+  /** เมื่อเคลมเฉพาะ module/sensor — SN เครื่องหลัก/จอ ของงาน (อ้างอิงชุด) */
+  parent_serial_number?: string
+  /** ขอบเขตเคลม — ข้อมูลเก่าไม่มีฟิลด์นี้ถือเป็น whole_unit */
+  claim_scope?: "whole_unit" | "module" | "sensor"
+  /** เช่น Module 2, R/F Sensor */
+  claimed_component_label?: string
+  failure_reason: string
+  claim_reference?: string
+  status:
+    | "pending_claim_submission"
+    | "sent_overseas"
+    | "replacement_received"
+    | "replacement_commissioning"
+    | "closed"
+  failed_at: string
+  sent_overseas_at?: string
+  replacement_serial_number?: string
+  replacement_dispatch_id?: string
+  replacement_job_id?: string
+  replacement_job_no?: string
+  replacement_received_at?: string
+  replacement_note?: string
+  closed_at?: string
 }
 
 export interface ASOxygenSensorHistoryEntry {
@@ -347,6 +386,21 @@ export interface KPISettings {
 export interface SESettings {
   se_customers: string[]
   se_owners: string[]
+  se_stages: string[]
+}
+
+export interface SEDeal {
+  id: string
+  deal_no: string
+  customer_name: string
+  title: string
+  product_model?: string
+  manufacturer?: string
+  stage: string
+  value: number
+  probability: number
+  expected_close_date: string
+  owner: string
 }
 
 export interface ProductCatalogGroup {
@@ -382,6 +436,7 @@ export const AS_STORE_KEYS = {
   globalSettings: "global_settings",
   kpiSettings: "kpi_settings",
   seSettings: "se_settings",
+  seDeals: "se_deals",
   productCatalog: "product_catalog",
   moduleAssignments: "as_module_assignments",
   asWorkflowSettings: "as_workflow_settings",
@@ -390,6 +445,7 @@ export const AS_STORE_KEYS = {
   stockNotifications: "as_stock_notifications",
   equipmentHistory: "as_equipment_history",
   oxygenSensorHistory: "as_oxygen_sensor_history",
+  commissioningClaimCases: "as_commissioning_claim_cases",
   /** Optimistic concurrency counter for `as_service_jobs` (multi-tab mock) */
   jobsVersion: "as_service_jobs_version",
 } as const
@@ -444,6 +500,7 @@ export const DEFAULT_SE_SETTINGS: SESettings = {
     "คลินิกสุขภาพดี",
   ],
   se_owners: ["คุณอนันต์", "คุณนภา", "คุณรัตนา"],
+  se_stages: ["lead", "qualified", "proposal", "negotiation", "won", "lost"],
 }
 
 export const DEFAULT_PRODUCT_CATALOG: ProductCatalogGroup[] = [
@@ -826,6 +883,33 @@ export function appendOxygenSensorHistory(entry: ASOxygenSensorHistoryEntry) {
   writeOxygenSensorHistory([entry, ...current])
 }
 
+export function readCommissioningClaimCases(fallback: ASCommissioningClaimCase[]) {
+  return readStore<ASCommissioningClaimCase[]>(KEYS.commissioningClaimCases, fallback)
+}
+
+export function writeCommissioningClaimCases(value: ASCommissioningClaimCase[]) {
+  writeStore(KEYS.commissioningClaimCases, value)
+}
+
+export function appendCommissioningClaimCase(entry: ASCommissioningClaimCase) {
+  const current = readCommissioningClaimCases([])
+  if (current.some((e) => e.id === entry.id)) return
+  writeCommissioningClaimCases([entry, ...current])
+}
+
+export function updateCommissioningClaimCase(id: string, patch: Partial<ASCommissioningClaimCase>) {
+  const current = readCommissioningClaimCases([])
+  let changed = false
+  const next = current.map((c) => {
+    if (c.id !== id) return c
+    changed = true
+    return { ...c, ...patch }
+  })
+  if (!changed) return false
+  writeCommissioningClaimCases(next)
+  return true
+}
+
 export function readProactiveCalibrationAssets(fallback: ASProactiveCalibrationAsset[]) {
   return readStore<ASProactiveCalibrationAsset[]>(KEYS.proactiveCalibrationAssets, fallback)
 }
@@ -890,11 +974,24 @@ export function writeKPISettings(value: KPISettings) {
 }
 
 export function readSESettings(fallback: SESettings = DEFAULT_SE_SETTINGS) {
-  return readStore<SESettings>(KEYS.seSettings, fallback)
+  const value = readStore<Partial<SESettings>>(KEYS.seSettings, fallback)
+  return {
+    se_customers: Array.isArray(value.se_customers) ? value.se_customers : fallback.se_customers,
+    se_owners: Array.isArray(value.se_owners) ? value.se_owners : fallback.se_owners,
+    se_stages: Array.isArray(value.se_stages) && value.se_stages.length > 0 ? value.se_stages : fallback.se_stages,
+  }
 }
 
 export function writeSESettings(value: SESettings) {
   writeStore(KEYS.seSettings, value)
+}
+
+export function readSEDeals(fallback: SEDeal[]) {
+  return readStore<SEDeal[]>(KEYS.seDeals, fallback)
+}
+
+export function writeSEDeals(value: SEDeal[]) {
+  writeStore(KEYS.seDeals, value)
 }
 
 export function readProductCatalog(fallback: ProductCatalogGroup[] = DEFAULT_PRODUCT_CATALOG) {
