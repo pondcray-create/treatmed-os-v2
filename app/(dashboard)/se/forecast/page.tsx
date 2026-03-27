@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DealStageBadge } from "@/components/ui/status-badge"
 import { formatCurrency } from "@/lib/utils"
-import { readSEDeals, readSESettings, type SEDeal } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, readSEDeals, readSESettings, type SEDeal } from "@/lib/mock/as-store"
 import { useAuth } from "@/hooks/useAuth"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -42,16 +42,25 @@ export default function ForecastPage() {
   const [updates, setUpdates] = useState<ForecastUpdate[]>([])
   const [draftNoteByDeal, setDraftNoteByDeal] = useState<Record<string, string>>({})
   useEffect(() => {
-    const sync = () => {
-      setSESettings(readSESettings())
-      setDeals(readSEDeals([]))
+    const hydrateDeals = () => setDeals(readSEDeals([]))
+    const hydrateSettings = () => setSESettings(readSESettings())
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) hydrateSettings()
     }
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
-    sync()
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (!key) return
+      if (key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (key === AS_STORE_KEYS.seSettings) hydrateSettings()
+    }
+    hydrateDeals()
+    hydrateSettings()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
   useEffect(() => {

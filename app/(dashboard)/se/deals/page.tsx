@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge"
 import { DealStageBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatCurrency, formatDate } from "@/lib/utils"
-import { readSESettings } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, readSEDeals, readSESettings } from "@/lib/mock/as-store"
 import { useAuth } from "@/hooks/useAuth"
 
 interface Deal {
@@ -71,7 +71,7 @@ type ActivityForm = z.infer<typeof activitySchema>
 
 export default function DealsPage() {
   const { profile } = useAuth()
-  const [deals] = useState<Deal[]>(MOCK_DEALS)
+  const [deals, setDeals] = useState<Deal[]>(() => readSEDeals(MOCK_DEALS))
   const [seSettings, setSESettings] = useState(readSESettings())
   const [activities, setActivities] = useState<Activity[]>(MOCK_ACTIVITIES)
   const [search, setSearch] = useState("")
@@ -80,12 +80,25 @@ export default function DealsPage() {
   const { toast } = useToast()
 
   useEffect(() => {
-    const sync = () => setSESettings(readSESettings())
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
+    const hydrateDeals = () => setDeals(readSEDeals(MOCK_DEALS))
+    const hydrateSettings = () => setSESettings(readSESettings())
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) hydrateSettings()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (!key) return
+      if (key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (key === AS_STORE_KEYS.seSettings) hydrateSettings()
+    }
+    hydrateDeals()
+    hydrateSettings()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
 

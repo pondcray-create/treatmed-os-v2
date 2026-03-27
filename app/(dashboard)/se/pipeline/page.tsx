@@ -76,17 +76,31 @@ export default function PipelinePage() {
   }, [productCatalog])
 
   useEffect(() => {
-    const sync = () => {
-      setDeals(readSEDeals(MOCK_DEALS))
-      setSESettings(readSESettings())
+    const hydrateDeals = () => setDeals(readSEDeals(MOCK_DEALS))
+    const hydrateSettings = () => setSESettings(readSESettings())
+    const hydrateBookings = () =>
       setBookingRequests(readStockBookingsLedger<StockBookingRequest[]>([]).filter((b) => b.source === "se_deal"))
+
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) hydrateSettings()
+      if (!ev.key || ev.key === AS_STORE_KEYS.stockBookings) hydrateBookings()
     }
-    window.addEventListener("storage", sync)
-    window.addEventListener("as-store-updated", sync)
-    sync()
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (!key) return
+      if (key === AS_STORE_KEYS.seDeals) hydrateDeals()
+      if (key === AS_STORE_KEYS.seSettings) hydrateSettings()
+      if (key === AS_STORE_KEYS.stockBookings) hydrateBookings()
+    }
+    hydrateDeals()
+    hydrateSettings()
+    hydrateBookings()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
-      window.removeEventListener("storage", sync)
-      window.removeEventListener("as-store-updated", sync)
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
 
@@ -138,7 +152,11 @@ export default function PipelinePage() {
       owner: isAdmin ? (data.owner ?? "") : (currentOwnerName || data.owner || ""),
       manufacturer: data.manufacturer?.trim() || selectedModel?.manufacturer || undefined,
     }
-    setDeals(prev => [newDeal, ...prev])
+    const nextDeals = [newDeal, ...deals]
+    // Persist ดีลก่อน แล้วค่อยแตะ se_settings — ไม่งั้น as-store-updated จาก settings จะ sync ดีล
+    // จาก localStorage ก่อน useEffect จะเขียน ทำให้ดีลที่เพิ่งสร้างหายไป
+    writeSEDeals(nextDeals)
+    setDeals(nextDeals)
     if (!seSettings.se_customers.includes(customerName)) {
       writeSESettings({
         ...seSettings,
@@ -327,6 +345,9 @@ export default function PipelinePage() {
                     {modelOptions.map((m) => <SelectItem key={m.model} value={m.model}>{m.model}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                {errors.product_model && (
+                  <p className="text-xs text-red-600">{errors.product_model.message || "กรุณาเลือก Product Model"}</p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Manufacturer</Label>
