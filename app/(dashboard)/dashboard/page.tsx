@@ -44,7 +44,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 export default function DashboardPage() {
   const [stockItems, setStockItems] = useState<ASStockSnapshotItem[]>([])
-  const [seDeals, setSEDeals] = useState<SEDeal[]>(() => readSEDeals([]))
+  const [seDeals, setSEDeals] = useState<SEDeal[]>([])
 
   useEffect(() => {
     const syncStock = () => setStockItems(readStockItems([]))

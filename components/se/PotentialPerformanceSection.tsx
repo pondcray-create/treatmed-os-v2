@@ -4,28 +4,64 @@ import { useEffect, useMemo, useState } from "react"
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer } from "recharts"
 import { ShieldCheck } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { AS_STORE_KEYS, readSESettings } from "@/lib/mock/as-store"
+import {
+  AS_STORE_KEYS,
+  initialSESettingsForSSR,
+  readSEDealActivities,
+  readSEDeals,
+  readSESettings,
+  type SEDeal,
+  type SEDealActivityRecord,
+  type SESettings,
+} from "@/lib/mock/as-store"
 import { Badge } from "@/components/ui/badge"
+import { buildPotentialPerformanceRows } from "@/lib/se/se-potential-performance"
 
-type AxisRow = { axis: string; score: number; fullMark: number }
-const PHOTO_STORE_KEY = "se_performance_hex_photos"
-
-const AXIS_NAMES = ["Responsibility", "Target", "Pipeline", "Closing", "Follow-up", "Collaboration"]
+const NEW_PHOTO_KEY = "se_potential_performance_photos"
+const LEGACY_PHOTO_KEY = "se_performance_hex_photos"
 
 type Props = {
-  /** ความสูงกราฟ (px) — ใช้ค่าเล็กลงบน SE Dashboard */
   chartHeight?: number
 }
 
-export function PerformanceHexSection({ chartHeight = 320 }: Props) {
-  const initial = readSESettings()
-  const [owners, setOwners] = useState<string[]>(initial.se_owners)
-  const [selectedOwner, setSelectedOwner] = useState<string>(initial.se_owners[0] ?? "")
+export function PotentialPerformanceSection({ chartHeight = 320 }: Props) {
+  const [settings, setSettings] = useState<SESettings>(() => initialSESettingsForSSR())
+  const [deals, setDeals] = useState<SEDeal[]>([])
+  const [activities, setActivities] = useState<SEDealActivityRecord[]>([])
+  const owners = settings.se_owners
+  const [selectedOwner, setSelectedOwner] = useState<string>("")
   const [photoByOwner, setPhotoByOwner] = useState<Record<string, string>>({})
 
   useEffect(() => {
+    setSettings(readSESettings())
+    setDeals(readSEDeals([]))
+    setActivities(readSEDealActivities([]))
+    const sync = () => setSettings(readSESettings())
+    const syncDeals = () => setDeals(readSEDeals([]))
+    const syncActivities = () => setActivities(readSEDealActivities([]))
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) sync()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) syncDeals()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seDealActivities) syncActivities()
+    }
+    const onStoreUpdated = (ev: Event) => {
+      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
+      if (key === AS_STORE_KEYS.seSettings) sync()
+      if (key === AS_STORE_KEYS.seDeals) syncDeals()
+      if (key === AS_STORE_KEYS.seDealActivities) syncActivities()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener("as-store-updated", onStoreUpdated)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener("as-store-updated", onStoreUpdated)
+    }
+  }, [])
+
+  useEffect(() => {
     try {
-      const raw = localStorage.getItem(PHOTO_STORE_KEY)
+      let raw = localStorage.getItem(NEW_PHOTO_KEY)
+      if (!raw) raw = localStorage.getItem(LEGACY_PHOTO_KEY)
       if (!raw) return
       const parsed = JSON.parse(raw) as Record<string, string>
       if (parsed && typeof parsed === "object") setPhotoByOwner(parsed)
@@ -36,52 +72,23 @@ export function PerformanceHexSection({ chartHeight = 320 }: Props) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(PHOTO_STORE_KEY, JSON.stringify(photoByOwner))
+      localStorage.setItem(NEW_PHOTO_KEY, JSON.stringify(photoByOwner))
     } catch {
       // ignore
     }
   }, [photoByOwner])
 
   useEffect(() => {
-    const sync = () => {
-      const next = readSESettings().se_owners
-      setOwners(next)
-      setSelectedOwner((cur) => (next.includes(cur) ? cur : next[0] ?? ""))
+    if (owners.length > 0 && (!selectedOwner || !owners.includes(selectedOwner))) {
+      setSelectedOwner(owners[0]!)
     }
-    const onStorage = (ev: StorageEvent) => {
-      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) sync()
-    }
-    const onStoreUpdated = (ev: Event) => {
-      const key = (ev as CustomEvent<{ key?: string }>).detail?.key
-      if (key === AS_STORE_KEYS.seSettings) sync()
-    }
-    sync()
-    window.addEventListener("storage", onStorage)
-    window.addEventListener("as-store-updated", onStoreUpdated)
-    return () => {
-      window.removeEventListener("storage", onStorage)
-      window.removeEventListener("as-store-updated", onStoreUpdated)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (owners.length > 0 && !selectedOwner) setSelectedOwner(owners[0])
   }, [owners, selectedOwner])
 
-  const scoreByOwner = useMemo(() => {
-    const by = new Map<string, AxisRow[]>()
-    owners.forEach((owner, ownerIdx) => {
-      const rows: AxisRow[] = AXIS_NAMES.map((axis, idx) => {
-        const seed = `${owner}-${axis}-${ownerIdx}-${idx}`.length * 17 + ownerIdx * 11 + idx * 7
-        const score = Math.max(35, Math.min(96, 40 + (seed % 58)))
-        return { axis, score, fullMark: 100 }
-      })
-      by.set(owner, rows)
-    })
-    return by
-  }, [owners])
+  const rows = useMemo(() => {
+    if (!selectedOwner) return []
+    return buildPotentialPerformanceRows(settings, selectedOwner, deals, activities)
+  }, [settings, selectedOwner, deals, activities])
 
-  const rows = selectedOwner ? scoreByOwner.get(selectedOwner) || [] : []
   const avg = Math.round(rows.reduce((sum, r) => sum + r.score, 0) / Math.max(1, rows.length))
 
   function onUploadPhoto(file?: File) {
@@ -101,7 +108,7 @@ export function PerformanceHexSection({ chartHeight = 320 }: Props) {
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-violet-600" />
-            Performance Hex
+            Potential Performance
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -118,9 +125,12 @@ export function PerformanceHexSection({ chartHeight = 320 }: Props) {
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-violet-600" />
-          Performance Hex (ทีมขาย)
+          Potential Performance (ทีมขาย)
         </CardTitle>
-        <p className="text-xs text-muted-foreground font-normal">เรดาร์ 6 ด้าน — สเกลจำลองสำหรับดูภาพรวม</p>
+        <p className="text-xs text-muted-foreground font-normal">
+          คะแนนแต่ละแกนคำนวณอัตโนมัติจากดีล/กิจกรรมในระบบ โดยอิง key ของแกนจาก{" "}
+          <span className="font-medium text-gray-700">Settings → SE → Potential Performance</span>
+        </p>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">

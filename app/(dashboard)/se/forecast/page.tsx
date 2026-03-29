@@ -8,7 +8,13 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DealStageBadge } from "@/components/ui/status-badge"
 import { formatCurrency } from "@/lib/utils"
-import { AS_STORE_KEYS, readSEDeals, readSESettings, type SEDeal } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, initialSESettingsForSSR, readSEDeals, readSESettings, type SEDeal } from "@/lib/mock/as-store"
+import { dealMeetsQuotationPipeline, getSEStageNames } from "@/lib/se/se-pipeline-stages"
+import {
+  dealIsOpenForForecast,
+  effectiveForecastProbabilityPercent,
+  weightedOpenPipelineThb,
+} from "@/lib/se/se-forecast-integrity"
 import { useAuth } from "@/hooks/useAuth"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -35,8 +41,8 @@ type ForecastUpdate = { id: string; deal_id: string; month: string; note: string
 
 export default function ForecastPage() {
   const { profile } = useAuth()
-  const [seSettings, setSESettings] = useState(readSESettings())
-  const [deals, setDeals] = useState<SEDeal[]>(readSEDeals([]))
+  const [seSettings, setSESettings] = useState(() => initialSESettingsForSSR())
+  const [deals, setDeals] = useState<SEDeal[]>([])
   const [selectedMonth, setSelectedMonth] = useState<string>("all")
   const [myDealsOnly, setMyDealsOnly] = useState(true)
   const [updates, setUpdates] = useState<ForecastUpdate[]>([])
@@ -105,10 +111,15 @@ export default function ForecastPage() {
 
   const totalPipeline = monthlyDeals.reduce((sum, d) => sum + (d.value || 0), 0)
   const weightedPipeline = monthlyDeals.reduce((sum, d) => sum + (d.value || 0) * (d.probability || 0) / 100, 0)
+  const weightedPolicyPipeline = useMemo(
+    () => weightedOpenPipelineThb(monthlyDeals, seSettings, "policy_floor"),
+    [monthlyDeals, seSettings],
+  )
 
   const stageDist = useMemo(() => {
     const palette = ["#94a3b8", "#60a5fa", "#a78bfa", "#fb923c", "#34d399", "#f87171", "#2dd4bf", "#c084fc"]
-    const stageOrder = seSettings.se_stages.length > 0 ? seSettings.se_stages : Array.from(new Set(monthlyDeals.map((d) => d.stage)))
+    const names = getSEStageNames(seSettings)
+    const stageOrder = names.length > 0 ? names : Array.from(new Set(monthlyDeals.map((d) => d.stage)))
     return stageOrder
       .map((s, idx) => ({
         name: s,
@@ -116,7 +127,7 @@ export default function ForecastPage() {
         color: palette[idx % palette.length],
       }))
       .filter((s) => s.value > 0)
-  }, [seSettings.se_stages, monthlyDeals])
+  }, [seSettings.se_pipeline_stages, monthlyDeals])
 
   function appendUpdate(deal: SEDeal) {
     const note = (draftNoteByDeal[deal.id] || "").trim()
@@ -128,7 +139,11 @@ export default function ForecastPage() {
 
   return (
     <div>
-      <PageHeader title="Forecast / พยากรณ์ยอดขาย" description="ภาพรวมยอดขายและ pipeline" icon={TrendingUp} />
+      <PageHeader
+        title="Forecast / พยากรณ์ยอดขาย"
+        description="Weighted ตามที่ใส่ vs ฐานนโยบาย (max กับ min ของ stage และดีลในมือ) — กัน forecast ต่ำเกินจริง"
+        icon={TrendingUp}
+      />
       {profile?.role !== "admin" && (
         <div className="mb-3">
           <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
@@ -166,8 +181,12 @@ export default function ForecastPage() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-sm text-muted-foreground">Weighted Pipeline</p>
+            <p className="text-sm text-muted-foreground">Weighted (ตามที่ใส่)</p>
             <p className="text-2xl font-bold text-purple-600">{formatCurrency(weightedPipeline)}</p>
+            <p className="text-xs text-muted-foreground mt-1 leading-tight">
+              ฐานนโยบาย:{" "}
+              <span className="font-semibold text-violet-900">{formatCurrency(weightedPolicyPipeline)}</span>
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -244,12 +263,18 @@ export default function ForecastPage() {
                 <TableHead>Stage</TableHead>
                 <TableHead className="text-right">มูลค่า</TableHead>
                 <TableHead className="text-center">โอกาส</TableHead>
+                <TableHead className="text-center text-xs">โอกาส (ฐานนโยบาย)</TableHead>
                 <TableHead className="text-right">Weighted</TableHead>
+                <TableHead className="text-right">W. ฐานนโยบาย</TableHead>
                 <TableHead>ปิดภายใน</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {monthlyDeals.map(d => (
+              {monthlyDeals.map(d => {
+                const openF = dealIsOpenForForecast(d)
+                const effP = effectiveForecastProbabilityPercent(d, seSettings)
+                const wPolicy = openF ? (d.value || 0) * (effP / 100) : 0
+                return (
                 <TableRow key={d.id}>
                   <TableCell className="font-mono text-xs">{d.deal_no}</TableCell>
                   <TableCell className="font-medium">{d.title}</TableCell>
@@ -257,19 +282,35 @@ export default function ForecastPage() {
                   <TableCell><DealStageBadge stage={d.stage} /></TableCell>
                   <TableCell className="text-right">{formatCurrency(d.value || 0)}</TableCell>
                   <TableCell className="text-center">
-                    <Badge variant={(d.probability || 0) >= 70 ? "success" : (d.probability || 0) >= 40 ? "warning" : "secondary"}>
+                    <Badge
+                      variant={
+                        dealMeetsQuotationPipeline(seSettings, d)
+                          ? "success"
+                          : (d.probability || 0) >= 40
+                            ? "warning"
+                            : "secondary"
+                      }
+                    >
                       {d.probability}%
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-center text-xs text-muted-foreground">
+                    {openF ? `${effP}%` : "—"}
+                  </TableCell>
                   <TableCell className="text-right font-medium text-primary">{formatCurrency((d.value || 0) * (d.probability || 0) / 100)}</TableCell>
+                  <TableCell className="text-right text-xs font-medium text-violet-800">
+                    {openF ? formatCurrency(wPolicy) : "—"}
+                  </TableCell>
                   <TableCell className="text-sm">{d.expected_close_date || "-"}</TableCell>
                 </TableRow>
-              ))}
+              )})}
               <TableRow className="bg-muted/50 font-bold">
                 <TableCell colSpan={4}>รวม</TableCell>
                 <TableCell className="text-right">{formatCurrency(totalPipeline)}</TableCell>
                 <TableCell />
+                <TableCell />
                 <TableCell className="text-right text-primary">{formatCurrency(weightedPipeline)}</TableCell>
+                <TableCell className="text-right text-violet-900">{formatCurrency(weightedPolicyPipeline)}</TableCell>
                 <TableCell />
               </TableRow>
             </TableBody>

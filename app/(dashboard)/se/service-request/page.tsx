@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { FileText, Plus, Search } from "lucide-react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 
@@ -20,26 +20,21 @@ import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
 import { useAuth } from "@/hooks/useAuth"
 import {
+  appendSEDealActivity,
   appendStockDispatch,
   readJobs,
+  readSEDeals,
+  readSEServiceRequests,
   readSESettings,
   readStockDispatches,
+  writeSEServiceRequests,
   type ASServiceJob,
   type ASStockDispatch,
+  type SEServiceRequestStored,
 } from "@/lib/mock/as-store"
+import { sortedOrgCustomerNames } from "@/lib/se/se-org-customers"
 
-interface SEServiceRequest {
-  id: string
-  ref_no: string
-  customer_name: string
-  deal_title: string
-  request_type: "installation" | "training" | "maintenance" | "consultation"
-  description: string
-  status: "pending" | "scheduled" | "completed" | "cancelled"
-  scheduled_date: string
-  owner: string
-  created_at: string
-}
+type SEServiceRequest = SEServiceRequestStored
 
 const REQUEST_TYPE_LABELS = {
   installation: "ติดตั้ง",
@@ -51,6 +46,7 @@ const REQUEST_TYPE_LABELS = {
 const srSchema = z.object({
   customer_name: z.string().min(1),
   deal_title: z.string().optional(),
+  deal_id: z.string().optional(),
   request_type: z.enum(["installation", "training", "maintenance", "consultation"]),
   description: z.string().min(1),
   status: z.enum(["pending", "scheduled", "completed", "cancelled"]),
@@ -66,20 +62,29 @@ function seRefTag(id: string) {
 
 export default function SEServiceRequestPage() {
   const { profile } = useAuth()
-  const [requests, setRequests] = useState<SEServiceRequest[]>([])
+  const [requests, setRequests] = useState<SEServiceRequest[]>(() => readSEServiceRequests([]))
   const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
   const [stockDispatches, setStockDispatches] = useState<ASStockDispatch[]>([])
-  const [seCustomers, setSeCustomers] = useState<string[]>(() => readSESettings().se_customers)
+  const [customerOptions, setCustomerOptions] = useState<string[]>(() => sortedOrgCustomerNames())
   const [seOwners, setSeOwners] = useState<string[]>(() => readSESettings().se_owners)
   const [search, setSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<SEServiceRequest | null>(null)
   const { toast } = useToast()
 
-  const { register, handleSubmit, setValue, reset } = useForm<SRForm>({
+  const { register, handleSubmit, setValue, reset, control } = useForm<SRForm>({
     resolver: zodResolver(srSchema),
-    defaultValues: { request_type: "consultation", status: "pending" },
+    defaultValues: { request_type: "consultation", status: "pending", deal_id: "" },
   })
+
+  const watchCustomer = useWatch({ control, name: "customer_name" })
+  const watchDealId = useWatch({ control, name: "deal_id" })
+
+  const dealsForCustomer = useMemo(() => {
+    const c = (watchCustomer || "").trim()
+    if (!c) return []
+    return readSEDeals([]).filter((d) => d.customer_name.trim() === c)
+  }, [watchCustomer])
 
   const ownerName = profile?.full_name?.trim() || ""
   const isAdmin = profile?.role === "admin"
@@ -125,9 +130,10 @@ export default function SEServiceRequestPage() {
     const sync = () => {
       setServiceJobs(readJobs([]))
       setStockDispatches(readStockDispatches([]))
+      setCustomerOptions(sortedOrgCustomerNames())
       const se = readSESettings()
-      setSeCustomers(se.se_customers)
       setSeOwners(se.se_owners)
+      setRequests(readSEServiceRequests([]))
     }
     sync()
     window.addEventListener("storage", sync)
@@ -140,7 +146,16 @@ export default function SEServiceRequestPage() {
 
   function openAdd() {
     setEditTarget(null)
-    reset({ request_type: "consultation", status: "pending", owner: isAdmin ? "" : ownerName })
+    reset({
+      request_type: "consultation",
+      status: "pending",
+      owner: isAdmin ? "" : ownerName,
+      deal_id: "",
+      customer_name: "",
+      deal_title: "",
+      description: "",
+      scheduled_date: "",
+    })
     setDialogOpen(true)
   }
 
@@ -152,7 +167,19 @@ export default function SEServiceRequestPage() {
 
   function onSubmit(data: SRForm) {
     if (editTarget) {
-      setRequests(prev => prev.map(r => r.id === editTarget.id ? { ...r, ...data } : r))
+      const next = requests.map((r) =>
+        r.id === editTarget.id
+          ? {
+              ...r,
+              ...data,
+              deal_title: data.deal_title ?? "",
+              deal_id: data.deal_id?.trim() || undefined,
+              scheduled_date: data.scheduled_date ?? "",
+            }
+          : r,
+      )
+      setRequests(next)
+      writeSEServiceRequests(next)
       toast({ title: "อัปเดตสำเร็จ" })
     } else {
       const createdDate = new Date().toISOString().split("T")[0]
@@ -176,15 +203,35 @@ export default function SEServiceRequestPage() {
         dispatched_by: "SE",
         dispatched_at: new Date().toISOString(),
       })
-      setRequests(prev => [{
+      const existing = readSEServiceRequests([])
+      const ref_no = `SESR-${String(existing.length + 1).padStart(3, "0")}`
+      const row: SEServiceRequest = {
         ...data,
         owner,
         id: requestId,
-        ref_no: `SESR-${String(requests.length + 1).padStart(3, "0")}`,
+        ref_no,
         deal_title: data.deal_title ?? "",
+        deal_id: data.deal_id?.trim() || undefined,
         scheduled_date: data.scheduled_date ?? "",
         created_at: createdDate,
-      }, ...prev])
+      }
+      const merged = [row, ...existing]
+      setRequests(merged)
+      writeSEServiceRequests(merged)
+      const did = data.deal_id?.trim()
+      if (did) {
+        const actType = data.request_type === "training" ? "training_request" : "service_request"
+        appendSEDealActivity({
+          deal_id: did,
+          activity_type: actType,
+          source: "se_service_request",
+          subject: `คำขอ${REQUEST_TYPE_LABELS[data.request_type]} — ${ref_no}`,
+          note: data.description.slice(0, 800),
+          occurred_on: createdDate,
+          actor_name: owner,
+          meta: { ref_no, request_type: data.request_type },
+        })
+      }
       toast({ title: "สร้าง Service Request สำเร็จ" })
     }
     setDialogOpen(false)
@@ -292,14 +339,51 @@ export default function SEServiceRequestPage() {
             <div className="grid grid-cols-2 gap-4 py-4">
               <div className="space-y-1.5">
                 <Label>ลูกค้า *</Label>
-                <Select onValueChange={v => setValue("customer_name", v)} defaultValue={editTarget?.customer_name}>
+                <Select
+                  onValueChange={(v) => {
+                    setValue("customer_name", v)
+                    setValue("deal_id", "")
+                  }}
+                  defaultValue={editTarget?.customer_name}
+                >
                   <SelectTrigger><SelectValue placeholder="เลือกลูกค้า" /></SelectTrigger>
-                  <SelectContent>{seCustomers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>
+                    {customerOptions.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
                 <Label>ดีล / โครงการ</Label>
                 <Input placeholder="ชื่อดีล..." {...register("deal_title")} />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>ผูกดีลในระบบ (ไม่บังคับ) — สำหรับ Activity</Label>
+                <Select
+                  value={watchDealId && watchDealId.trim() ? watchDealId : "_none"}
+                  onValueChange={(v) => setValue("deal_id", v === "_none" ? "" : v)}
+                  disabled={!watchCustomer}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={watchCustomer ? "เลือกดีล" : "เลือกลูกค้าก่อน"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_none">ไม่ผูกดีล</SelectItem>
+                    {dealsForCustomer.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.deal_no} · {d.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {watchCustomer && dealsForCustomer.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    ไม่มีดีลที่ชื่อลูกค้าตรงกับรายชื่อนี้ใน Pipeline
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-1.5">
                 <Label>ประเภทคำขอ</Label>

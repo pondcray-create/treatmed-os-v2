@@ -12,6 +12,7 @@ export interface ASContact {
 export interface ASOrganization {
   id: string
   name: string
+  name_english?: string
   org_type: string
   org_format: string
   province: string
@@ -237,9 +238,25 @@ export interface GlobalSettings {
   default_currency: string
 }
 
+export interface SEHealthDistrictTarget {
+  district: number
+  annual_cap_thb: number
+  primary_owner: string
+}
+
+export interface SEPipelineStageRule {
+  name: string
+  min_closing_probability: number
+}
+
 export interface SESettings {
-  se_customers: string[]
   se_owners: string[]
+  se_pipeline_stages: SEPipelineStageRule[]
+  company_achieve_factor: number
+  segment_mix_public_hospital_pct: number
+  segment_mix_other_pct: number
+  segment_mix_buffer_pct: number
+  health_district_targets: SEHealthDistrictTarget[]
 }
 
 export interface ProductCatalogGroup {
@@ -304,16 +321,148 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   default_currency: "THB",
 }
 
+export function defaultHealthDistrictTargets(): SEHealthDistrictTarget[] {
+  return Array.from({ length: 13 }, (_, i) => ({
+    district: i + 1,
+    annual_cap_thb: 0,
+    primary_owner: "",
+  }))
+}
+
+export function defaultSEPipelineStages(): SEPipelineStageRule[] {
+  const open = { min_closing_probability: 70 }
+  return [
+    { name: "lead", ...open },
+    { name: "qualified", ...open },
+    { name: "proposal", ...open },
+    { name: "negotiation", ...open },
+    { name: "won", min_closing_probability: 100 },
+    { name: "lost", min_closing_probability: 100 },
+  ]
+}
+
 export const DEFAULT_SE_SETTINGS: SESettings = {
-  se_customers: [
-    "โรงพยาบาลกรุงเทพ",
-    "โรงพยาบาลรามาธิบดี",
-    "โรงพยาบาลศิริราช",
-    "โรงพยาบาลสมิติเวช",
-    "โรงพยาบาลมหาราชนครเชียงใหม่",
-    "คลินิกสุขภาพดี",
-  ],
   se_owners: ["คุณอนันต์", "คุณนภา", "คุณรัตนา"],
+  se_pipeline_stages: defaultSEPipelineStages(),
+  company_achieve_factor: 0.85,
+  segment_mix_public_hospital_pct: 55,
+  segment_mix_other_pct: 30,
+  segment_mix_buffer_pct: 15,
+  health_district_targets: defaultHealthDistrictTargets(),
+}
+
+function mergeHealthDistrictTargets(
+  stored: SEHealthDistrictTarget[] | undefined,
+): SEHealthDistrictTarget[] {
+  const base = defaultHealthDistrictTargets()
+  if (!Array.isArray(stored) || stored.length === 0) return base
+  return base.map((b) => {
+    const hit = stored.find((x) => Number(x.district) === b.district)
+    if (!hit) return b
+    return {
+      district: b.district,
+      annual_cap_thb: Math.max(0, Number(hit.annual_cap_thb) || 0),
+      primary_owner: typeof hit.primary_owner === "string" ? hit.primary_owner.trim() : "",
+    }
+  })
+}
+
+type LegacySESettingsBlob = {
+  se_stages?: string[]
+  booking_request_min_probability?: number
+  quotation_pipeline_min_probability?: number
+}
+
+type LegacyStageRuleBlobExport = {
+  booking_min_probability?: number
+  quotation_pipeline_min_probability?: number
+  min_closing_probability?: number
+}
+
+function mergeSEPipelineStagesExport(value: Partial<SESettings>, fb: SESettings): SEPipelineStageRule[] {
+  const v = value as Partial<SESettings> & LegacySESettingsBlob
+  const raw = v.se_pipeline_stages
+  if (
+    Array.isArray(raw) &&
+    raw.length > 0 &&
+    raw.every((x) => x && typeof x === "object" && typeof (x as SEPipelineStageRule).name === "string")
+  ) {
+    const seen = new Set<string>()
+    const out: SEPipelineStageRule[] = []
+    for (const r of raw as (SEPipelineStageRule & LegacyStageRuleBlobExport)[]) {
+      const name = String(r.name).trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      let minClose = Number(r.min_closing_probability)
+      if (!Number.isFinite(minClose)) {
+        const b = Number(r.booking_min_probability)
+        const q = Number(r.quotation_pipeline_min_probability)
+        const hasB = Number.isFinite(b)
+        const hasQ = Number.isFinite(q)
+        minClose = hasB && hasQ ? Math.max(b, q) : hasB ? b : hasQ ? q : 70
+      }
+      out.push({
+        name,
+        min_closing_probability: Math.min(100, Math.max(0, minClose)),
+      })
+    }
+    if (out.length > 0) return out
+  }
+  const oldStages = v.se_stages
+  const globBook =
+    typeof v.booking_request_min_probability === "number" && Number.isFinite(v.booking_request_min_probability)
+      ? Math.min(100, Math.max(0, v.booking_request_min_probability))
+      : 70
+  const globQuote =
+    typeof v.quotation_pipeline_min_probability === "number" &&
+    Number.isFinite(v.quotation_pipeline_min_probability)
+      ? Math.min(100, Math.max(0, v.quotation_pipeline_min_probability))
+      : 50
+  if (Array.isArray(oldStages) && oldStages.length > 0) {
+    const mergedGlob = Math.max(globBook, globQuote)
+    return oldStages.map((name) => {
+      const n = String(name).trim()
+      const l = n.toLowerCase()
+      const closedWon = /won|ชนะ/.test(l)
+      const closedLost = /lost|แพ้/.test(l)
+      if (closedWon || closedLost) {
+        return { name: n, min_closing_probability: 100 }
+      }
+      return {
+        name: n,
+        min_closing_probability: mergedGlob,
+      }
+    })
+  }
+  return fb.se_pipeline_stages.length > 0 ? fb.se_pipeline_stages : defaultSEPipelineStages()
+}
+
+export function parseSESettingsBlob(value: Partial<SESettings>, fb: SESettings = DEFAULT_SE_SETTINGS): SESettings {
+  const achieve =
+    typeof value.company_achieve_factor === "number" && Number.isFinite(value.company_achieve_factor)
+      ? Math.min(1, Math.max(0, value.company_achieve_factor))
+      : fb.company_achieve_factor
+  const mixPub =
+    typeof value.segment_mix_public_hospital_pct === "number" && Number.isFinite(value.segment_mix_public_hospital_pct)
+      ? Math.max(0, value.segment_mix_public_hospital_pct)
+      : fb.segment_mix_public_hospital_pct
+  const mixOth =
+    typeof value.segment_mix_other_pct === "number" && Number.isFinite(value.segment_mix_other_pct)
+      ? Math.max(0, value.segment_mix_other_pct)
+      : fb.segment_mix_other_pct
+  const mixBuf =
+    typeof value.segment_mix_buffer_pct === "number" && Number.isFinite(value.segment_mix_buffer_pct)
+      ? Math.max(0, value.segment_mix_buffer_pct)
+      : fb.segment_mix_buffer_pct
+  return {
+    se_owners: Array.isArray(value.se_owners) ? value.se_owners.map((s) => String(s)) : fb.se_owners,
+    se_pipeline_stages: mergeSEPipelineStagesExport(value, fb),
+    company_achieve_factor: achieve,
+    segment_mix_public_hospital_pct: mixPub,
+    segment_mix_other_pct: mixOth,
+    segment_mix_buffer_pct: mixBuf,
+    health_district_targets: mergeHealthDistrictTargets(value.health_district_targets),
+  }
 }
 
 export const DEFAULT_PRODUCT_CATALOG: ProductCatalogGroup[] = [
@@ -622,7 +771,8 @@ export function writeGlobalSettings(value: GlobalSettings) {
 }
 
 export function readSESettings(fallback: SESettings = DEFAULT_SE_SETTINGS) {
-  return readStore<SESettings>(KEYS.seSettings, fallback)
+  const value = readStore<Partial<SESettings>>(KEYS.seSettings, fallback)
+  return parseSESettingsBlob(value, fallback)
 }
 
 export function writeSESettings(value: SESettings) {

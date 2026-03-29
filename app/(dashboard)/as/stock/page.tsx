@@ -1,7 +1,36 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
-import { Package, Plus, Search, X, AlertTriangle, CheckCircle2, Wrench, FlaskConical, ShoppingCart, Zap, Drill, Camera, ChevronRight, Bookmark, Send, User, Building2, ClipboardList, MoreHorizontal, ArrowDownCircle, Bell } from "lucide-react"
+import {
+  Package,
+  Plus,
+  Search,
+  X,
+  AlertTriangle,
+  CheckCircle2,
+  Wrench,
+  FlaskConical,
+  ShoppingCart,
+  Zap,
+  Drill,
+  Camera,
+  ChevronRight,
+  Bookmark,
+  Send,
+  User,
+  Building2,
+  ClipboardList,
+  MoreHorizontal,
+  ArrowDownCircle,
+  Bell,
+  LayoutGrid,
+  ShieldCheck,
+  History,
+  ArrowLeftRight,
+  Sparkles,
+  Activity,
+  type LucideIcon,
+} from "lucide-react"
 import {
   appendModuleAssignment,
   appendLoanReturnHistory,
@@ -48,8 +77,15 @@ import {
   type ASPartsRequest,
   type ASStockNotification,
   type ASCommissioningClaimCase,
+  appendSEDealActivity,
+  readSEDeals,
+  readSEOrderRequests,
+  setSEOrderRequestPoVerified,
+  type SEDeal,
+  type SEOrderRequest,
 } from "@/lib/mock/as-store"
 import { formatThDateFromYMD, formatThDateTime, thDateInputBeHint } from "@/lib/format-th-datetime"
+import { cn } from "@/lib/utils"
 import { newId } from "@/lib/new-id"
 import { canApproveStockLoan, readMockSession } from "@/lib/mock/session"
 import { getStockPatternManufacturers, getStockPatternModelsForManufacturer } from "@/lib/product-catalog-options"
@@ -516,7 +552,7 @@ function LoanDialog({
 }: {
   item: StockItem
   onClose: () => void
-  onConfirm: (payload: { customer: string; dueDate: string }) => void
+  onConfirm: (payload: { customer: string; dueDate: string; dealId?: string }) => void
   todayISO: string
   /** true = สินค้าไม่ใช่ Demo (ผ่านขั้นอนุมัติแล้ว) */
   priorApprovalRequired: boolean
@@ -526,6 +562,8 @@ function LoanDialog({
   const [freeOrg, setFreeOrg] = useState("")
   const [dueDate, setDueDate] = useState(item.loan_due || todayISO)
   const [dueErr, setDueErr] = useState<string | null>(null)
+  const [seDeals, setSeDeals] = useState<SEDeal[]>([])
+  const [dealLink, setDealLink] = useState("")
   const inp = "w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm bg-white"
 
   useEffect(() => {
@@ -537,7 +575,18 @@ function LoanDialog({
       setOrgPick("__other__")
       setFreeOrg(lt)
     }
+    setSeDeals(readSEDeals([]))
+    setDealLink("")
   }, [item.id, item.loaned_to])
+
+  const orgNameLive = orgPick === "__other__" ? freeOrg.trim() : orgPick.trim()
+  const matchingDeals = useMemo(
+    () =>
+      orgNameLive
+        ? seDeals.filter((d) => d.customer_name.trim().toLowerCase() === orgNameLive.toLowerCase())
+        : [],
+    [seDeals, orgNameLive],
+  )
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -550,7 +599,8 @@ function LoanDialog({
     }
     const nextOrgs = upsertOrganizationByName(readOrganizations([]), orgName, undefined)
     writeOrganizations(nextOrgs)
-    onConfirm({ customer: orgName, dueDate })
+    const dealOk = dealLink && matchingDeals.some((d) => d.id === dealLink)
+    onConfirm({ customer: orgName, dueDate, dealId: dealOk ? dealLink : undefined })
     onClose()
   }
 
@@ -607,6 +657,28 @@ function LoanDialog({
             <input type="date" required value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inp} />
             <p className="text-[10px] text-gray-500 mt-1 leading-snug">{thDateInputBeHint(dueDate)}</p>
           </div>
+          {orgNameLive ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">ผูกดีล SE (ไม่บังคับ)</label>
+              <select
+                value={dealLink}
+                onChange={(e) => setDealLink(e.target.value)}
+                className={inp}
+              >
+                <option value="">ไม่ผูกดีล</option>
+                {matchingDeals.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.deal_no} · {d.title}
+                  </option>
+                ))}
+              </select>
+              {matchingDeals.length === 0 && (
+                <p className="text-[10px] text-amber-700 mt-1 leading-snug">
+                  ไม่มีดีลที่ชื่อลูกค้าตรงกับหน่วยงานนี้ — บันทึก Activity อัตโนมัติเมื่อเลือกดีลได้หลังมีดีลตรงชื่อ
+                </p>
+              )}
+            </div>
+          ) : null}
           {dueErr && <p className="text-xs text-red-600">{dueErr}</p>}
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium">
@@ -2017,6 +2089,7 @@ export default function StockPage() {
   const [claimReplacementNote, setClaimReplacementNote] = useState("")
   const [claimFilterScope, setClaimFilterScope] = useState<"all" | "whole_unit" | "module" | "sensor">("all")
   const [claimSearchQuery, setClaimSearchQuery] = useState("")
+  const [seOrderRequests, setSeOrderRequests] = useState<SEOrderRequest[]>(() => readSEOrderRequests([]))
 
   const lowStock = items.filter(i => i.qty < i.min_qty && i.status === "in_stock")
   const demoOnLoan = items.filter(i => i.category === "demo" && i.status === "on_loan")
@@ -2134,6 +2207,7 @@ export default function StockPage() {
 
   useEffect(() => {
     const syncJobsAndDispatches = () => {
+      setSeOrderRequests(readSEOrderRequests([]))
       const jobs = readJobs([])
       const dispatches = readStockDispatches([])
       const parts = readPartsRequests([])
@@ -2993,7 +3067,7 @@ export default function StockPage() {
     setTimeout(() => setDispatchSuccess(null), 3500)
   }
 
-  function quickLoanItem(item: StockItem, payload: { customer: string; dueDate: string }) {
+  function quickLoanItem(item: StockItem, payload: { customer: string; dueDate: string; dealId?: string }) {
     if (!canOpenStockLoanForm(item)) {
       setDispatchSuccess("ยืมไม่ได้: Demo ยืมได้ทันที — สินค้าอื่นต้องได้รับอนุมัติก่อน")
       setTimeout(() => setDispatchSuccess(null), 4000)
@@ -3016,6 +3090,19 @@ export default function StockPage() {
           : i,
       ),
     )
+    if (payload.dealId) {
+      const session = readMockSession()
+      appendSEDealActivity({
+        deal_id: payload.dealId,
+        activity_type: "demo_loan",
+        source: "stock_loan",
+        subject: `ยืมเครื่องออก: ${item.name}`,
+        note: `ลูกค้า: ${payload.customer} · คืน ${payload.dueDate}`,
+        occurred_on: today,
+        actor_name: session.displayName?.trim() || session.userId,
+        meta: { stock_item_name: item.name, serial_number: item.serial_number },
+      })
+    }
     setDispatchSuccess(`อัปเดตเป็น Loan แล้ว (${payload.customer})`)
     setTimeout(() => setDispatchSuccess(null), 2500)
   }
@@ -3306,14 +3393,100 @@ export default function StockPage() {
     OUTBOUND_TRACE_CANCELLED: "Outbound trace cancelled",
   }
 
-  const TABS = [
-    { id:"all" as Tab, label:"All Stock" },
-    { id: "booking" as Tab, label: `Booking (${reservedItems.length})` },
-    { id: "claim" as Tab, label: `Claim (${activeClaimCases.length})` },
-    { id: "sold_history" as Tab, label: `Sold (${soldHistoryRows.length})` },
-    { id:"loan" as Tab, label:`Loan (${stockOnLoan.length})` },
-    { id:"demo" as Tab, label:"Demo Tracker" },
-    { id:"service_history" as Tab, label:`Service trace log (${serviceTraceLogTabCount})` },
+  const demoStockCount = items.filter((i) => i.category === "demo").length
+
+  const stockTabHeroes: {
+    id: Tab
+    title: string
+    subtitle: string
+    count: number
+    Icon: LucideIcon
+    accent: { active: string; idle: string; panel: string }
+  }[] = [
+    {
+      id: "all",
+      title: "All Stock",
+      subtitle: "มุมมองหลัก · Master & กรองหมวด",
+      count: items.length,
+      Icon: LayoutGrid,
+      accent: {
+        active: "bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/35",
+        idle: "bg-sky-50/90 text-sky-700 ring-1 ring-sky-100/80 group-hover:bg-sky-100",
+        panel: "from-sky-500/[0.07] via-white to-white",
+      },
+    },
+    {
+      id: "booking",
+      title: "Booking",
+      subtitle: "จองจาก Sales · SE Deal",
+      count: reservedItems.length,
+      Icon: Bookmark,
+      accent: {
+        active: "bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30",
+        idle: "bg-amber-50/90 text-amber-800 ring-1 ring-amber-100/80 group-hover:bg-amber-100",
+        panel: "from-amber-500/[0.08] via-white to-white",
+      },
+    },
+    {
+      id: "claim",
+      title: "Claim",
+      subtitle: "Commissioning / เคลม",
+      count: activeClaimCases.length,
+      Icon: ShieldCheck,
+      accent: {
+        active: "bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-md shadow-violet-500/30",
+        idle: "bg-violet-50/90 text-violet-800 ring-1 ring-violet-100/80 group-hover:bg-violet-100",
+        panel: "from-violet-500/[0.08] via-white to-white",
+      },
+    },
+    {
+      id: "sold_history",
+      title: "Sold",
+      subtitle: "ประวัติตัดขาย",
+      count: soldHistoryRows.length,
+      Icon: History,
+      accent: {
+        active: "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md shadow-emerald-500/28",
+        idle: "bg-emerald-50/90 text-emerald-800 ring-1 ring-emerald-100/80 group-hover:bg-emerald-100",
+        panel: "from-emerald-500/[0.07] via-white to-white",
+      },
+    },
+    {
+      id: "loan",
+      title: "Loan",
+      subtitle: "ยืมออก · ติดตามคืน",
+      count: stockOnLoan.length,
+      Icon: ArrowLeftRight,
+      accent: {
+        active: "bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-md shadow-cyan-500/28",
+        idle: "bg-cyan-50/90 text-cyan-800 ring-1 ring-cyan-100/80 group-hover:bg-cyan-100",
+        panel: "from-cyan-500/[0.08] via-white to-white",
+      },
+    },
+    {
+      id: "demo",
+      title: "Demo Tracker",
+      subtitle: "Demo unit · ยืม/คืน",
+      count: demoStockCount,
+      Icon: Sparkles,
+      accent: {
+        active: "bg-gradient-to-br from-orange-500 to-rose-500 text-white shadow-md shadow-orange-400/30",
+        idle: "bg-orange-50/90 text-orange-800 ring-1 ring-orange-100/80 group-hover:bg-orange-100",
+        panel: "from-orange-500/[0.08] via-white to-white",
+      },
+    },
+    {
+      id: "service_history",
+      title: "Service trace",
+      subtitle: "Outbound · ประวัติส่งซ่อม",
+      count: serviceTraceLogTabCount,
+      Icon: Activity,
+      accent: {
+        active: "bg-gradient-to-br from-indigo-500 to-blue-700 text-white shadow-md shadow-indigo-500/30",
+        idle: "bg-indigo-50/90 text-indigo-800 ring-1 ring-indigo-100/80 group-hover:bg-indigo-100",
+        panel: "from-indigo-500/[0.08] via-white to-white",
+      },
+    },
   ]
 
   return (
@@ -3423,6 +3596,57 @@ export default function StockPage() {
         <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-2xl mb-4 animate-in slide-in-from-top-2">
           <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0" />
           <p className="text-sm text-green-700 font-semibold">{dispatchSuccess}</p>
+        </div>
+      )}
+
+      {seOrderRequests.some((r) => !r.stock_po_verified) && (
+        <div className="mb-4 rounded-2xl border border-violet-200 bg-violet-50/50 p-4 ring-1 ring-violet-100">
+          <h2 className="text-sm font-bold text-violet-900 mb-1">Order Request จาก SE</h2>
+          <p className="text-[11px] text-violet-800/90 mb-3 leading-relaxed">
+            ตรวจเลข PO ลูกค้ากับอีเมลที่บริษัทได้รับ (ออเดอร์จริงออกนอกระบบ) — ติ๊กเมื่อตรงกัน
+          </p>
+          <div className="space-y-2">
+            {seOrderRequests
+              .filter((r) => !r.stock_po_verified)
+              .map((r) => (
+                <div
+                  key={r.id}
+                  className="flex flex-col gap-2 rounded-xl border border-white/80 bg-white/90 p-3 text-xs shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <p className="font-mono text-[10px] text-muted-foreground">{r.deal_no}</p>
+                    <p className="font-semibold text-gray-900">{r.deal_title}</p>
+                    <p className="text-muted-foreground">{r.customer_name}</p>
+                    <p>
+                      <span className="text-muted-foreground">PO ลูกค้า:</span>{" "}
+                      <span className="font-mono font-medium">{r.customer_po_no}</span>
+                    </p>
+                    <p>
+                      <span className="text-muted-foreground">QT Admin:</span>{" "}
+                      <span className="font-mono font-medium">{r.admin_quote_no}</span>
+                    </p>
+                    {r.note ? <p className="text-[11px] text-gray-600 pt-0.5">{r.note}</p> : null}
+                    <p className="text-[10px] text-muted-foreground">SE: {r.owner}</p>
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 shrink-0 rounded-lg border border-violet-200 bg-violet-50/80 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-violet-400"
+                      checked={!!r.stock_po_verified}
+                      onChange={(e) => {
+                        const session = readMockSession()
+                        const by = session.displayName?.trim() || session.userId
+                        setSEOrderRequestPoVerified(r.id, e.target.checked, by)
+                        setSeOrderRequests(readSEOrderRequests([]))
+                      }}
+                    />
+                    <span className="text-[11px] font-semibold text-violet-900 whitespace-nowrap">
+                      PO ตรงกับอีเมลแล้ว
+                    </span>
+                  </label>
+                </div>
+              ))}
+          </div>
         </div>
       )}
 
@@ -3657,11 +3881,77 @@ export default function StockPage() {
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 p-1 glass-panel rounded-2xl mb-5 w-fit">
-        {TABS.map(t => (
-          <button key={t.id} onClick={()=>setTab(t.id)} data-active={tab===t.id} className={`tab-premium px-4 py-2 rounded-xl text-sm font-semibold transition-all ${tab===t.id ? "text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>{t.label}</button>
-        ))}
+      {/* Stock view — Hero badges */}
+      <div className="mb-6">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Navigation</p>
+            <h2 className="text-lg font-bold tracking-tight text-slate-900">มุมมองคลัง</h2>
+          </div>
+          <p className="text-xs text-slate-500 max-w-md leading-snug">
+            เลือกมุมมองแบบการ์ด — ตัวเลขสรุปจำนวนรายการที่เกี่ยวข้อง
+          </p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+          {stockTabHeroes.map((t) => {
+            const active = tab === t.id
+            const Icon = t.Icon
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "group relative flex flex-col rounded-3xl border-2 p-4 text-left transition-all duration-200 min-h-[132px]",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2",
+                  active
+                    ? cn(
+                        "border-slate-900/88 shadow-[0_14px_40px_-14px_rgba(15,23,42,0.35)] scale-[1.02] z-[1] bg-gradient-to-b",
+                        t.accent.panel,
+                      )
+                    : "border-slate-200/90 bg-white/90 hover:border-slate-300 hover:bg-white hover:shadow-lg hover:-translate-y-0.5",
+                )}
+              >
+                <div className="relative flex flex-1 flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <span
+                      className={cn(
+                        "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-transform duration-200",
+                        active ? t.accent.active : t.accent.idle,
+                        !active && "group-hover:scale-105",
+                      )}
+                    >
+                      <Icon className="h-5 w-5" strokeWidth={2} aria-hidden />
+                    </span>
+                    {active && (
+                      <span
+                        className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.65)]"
+                        aria-hidden
+                      />
+                    )}
+                  </div>
+                  <p
+                    className={cn(
+                      "mt-3 text-sm font-bold tracking-tight leading-tight",
+                      active ? "text-slate-900" : "text-slate-800 group-hover:text-slate-900",
+                    )}
+                  >
+                    {t.title}
+                  </p>
+                  <p
+                    className={cn(
+                      "mt-1.5 text-[28px] font-black tabular-nums leading-none tracking-tight",
+                      active ? "text-slate-900" : "text-slate-700 group-hover:text-slate-900",
+                    )}
+                  >
+                    {t.count}
+                  </p>
+                  <p className="mt-2 text-[10px] font-medium text-slate-500 leading-snug line-clamp-2">{t.subtitle}</p>
+                </div>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* ── Tab: All Stock ───────────────────────────────────────────────────── */}

@@ -1,7 +1,7 @@
 "use client"
 
-import { Suspense, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Plus, Save, Settings2, Trash2 } from "lucide-react"
+import { Suspense, useEffect, useMemo, useState, type ChangeEvent } from "react"
+import { AlertTriangle, Download, Plus, Save, Settings2, Trash2 } from "lucide-react"
 import {
   AS_STORE_KEYS,
   DEFAULT_AS_DROPDOWN_CONFIG,
@@ -15,25 +15,41 @@ import {
   readKPISettings,
   readGlobalSettings,
   readProductCatalog,
+  readOrganizations,
+  readSEDeals,
   readSESettings,
   writeDropdownConfig,
   writeASWorkflowSettings,
   writeKPISettings,
   writeGlobalSettings,
   writeProductCatalog,
+  writeOrganizations,
+  writeSEDeals,
   writeSESettings,
+  coerceSESettingsForWrite,
   type ASDropdownConfig,
   type ASWorkflowSettings,
   type KPISettingEntry,
   type KPISettings,
   type GlobalSettings,
   type ProductCatalogGroup,
+  type SEPipelineStageRule,
   type SESettings,
 } from "@/lib/mock/as-store"
 import { useSearchParams } from "next/navigation"
 import { useAuth } from "@/hooks/useAuth"
+import { formatHealthDistrictLabel } from "@/lib/data/th-public-hospitals"
+import {
+  applySeDealsImport,
+  buildSeDealsImportTemplateCsv,
+  parseDealImportFile,
+  SE_DEALS_IMPORT_CANONICAL_HEADERS,
+} from "@/lib/se/se-deals-import"
+import { mergeManyDealsIntoRegister } from "@/lib/se/se-org-sync"
 
 type SettingsTab = "global" | "as" | "se"
+
+type SEListKey = "se_owners" | "se_lost_reasons" | "se_customer_segments"
 
 function normalizeUnique(values: string[]) {
   const cleaned = values.map((v) => v.trim()).filter(Boolean)
@@ -111,9 +127,9 @@ function SettingsPageContent() {
     service_technicians: "",
     service_statuses: "",
     calibration_statuses: "",
-    se_customers: "",
     se_owners: "",
-    se_stages: "",
+    se_lost_reasons: "",
+    se_customer_segments: "",
     product_code: "",
     product_label: "",
     product_manufacturer: "",
@@ -125,6 +141,9 @@ function SettingsPageContent() {
     kpi_reset_cycle: "monthly" as KPISettingEntry["reset_cycle"],
   })
   const [savedKey, setSavedKey] = useState<"as" | "se" | "global" | null>(null)
+  const [seImportMode, setSeImportMode] = useState<"merge" | "replace">("merge")
+  const [seImportBusy, setSeImportBusy] = useState(false)
+  const [seImportMsg, setSeImportMsg] = useState<string | null>(null)
   const serviceStatusChecks = useMemo(
     () => validateServiceStatuses(asWorkflow.service_statuses, "service"),
     [asWorkflow.service_statuses],
@@ -196,12 +215,12 @@ function SettingsPageContent() {
     setDraft((prev) => ({ ...prev, [kind]: "" }))
   }
 
-  function addSEItem(key: keyof SESettings) {
+  function addSEItem(key: SEListKey) {
     const value = draft[key].trim()
     if (!value) return
     setSESettings((prev) => ({
       ...prev,
-      [key]: normalizeUnique([...prev[key], value]),
+      [key]: normalizeUnique([...(prev[key] as string[]), value]),
     }))
     setDraft((prev) => ({ ...prev, [key]: "" }))
   }
@@ -220,10 +239,10 @@ function SettingsPageContent() {
     }))
   }
 
-  function removeSEItem(key: keyof SESettings, value: string) {
+  function removeSEItem(key: SEListKey, value: string) {
     setSESettings((prev) => ({
       ...prev,
-      [key]: prev[key].filter((x) => x !== value),
+      [key]: (prev[key] as string[]).filter((x) => x !== value),
     }))
   }
 
@@ -263,12 +282,32 @@ function SettingsPageContent() {
     window.setTimeout(() => setSavedKey(null), 2000)
   }
 
+  function normalizePipelineStagesForSave(rows: SEPipelineStageRule[]): SEPipelineStageRule[] {
+    const seen = new Set<string>()
+    const out: SEPipelineStageRule[] = []
+    for (const r of rows) {
+      const name = r.name.trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      out.push({
+        name,
+        min_closing_probability: Math.min(100, Math.max(0, Number(r.min_closing_probability) || 0)),
+      })
+    }
+    return out.length > 0 ? out : DEFAULT_SE_SETTINGS.se_pipeline_stages
+  }
+
   function saveSE() {
-    writeSESettings({
-      se_customers: normalizeUnique(seSettings.se_customers),
-      se_owners: normalizeUnique(seSettings.se_owners),
-      se_stages: normalizeUnique(seSettings.se_stages),
-    })
+    writeSESettings(
+      coerceSESettingsForWrite({
+        ...seSettings,
+        se_owners: normalizeUnique(seSettings.se_owners),
+        se_lost_reasons: normalizeUnique(seSettings.se_lost_reasons),
+        se_customer_segments: normalizeUnique(seSettings.se_customer_segments),
+        se_pipeline_stages: normalizePipelineStagesForSave(seSettings.se_pipeline_stages),
+      }),
+    )
+    setSESettings(readSESettings())
     setSavedKey("se")
     window.setTimeout(() => setSavedKey(null), 2000)
   }
@@ -377,13 +416,116 @@ function SettingsPageContent() {
 
   const selectedCatalog = productCatalog.find((g) => g.code === selectedCatalogCode)
   const seSections = useMemo(
-    () => [
-      { key: "se_customers" as const, label: "SE Customers", hint: "Customer options used by SE pages" },
-      { key: "se_owners" as const, label: "SE Owners", hint: "Sales owner options used by SE pages" },
-      { key: "se_stages" as const, label: "SE Stages", hint: "Pipeline stage options used by SE pages" },
-    ],
+    () =>
+      [
+        {
+          key: "se_owners" as const,
+          label: "SE Owners",
+          hint: "รายชื่อ Sales — Pipeline / เขตสุขภาพ · ลูกค้าใน SE ใช้รายการจาก Customer Register (AS)",
+        },
+        {
+          key: "se_lost_reasons" as const,
+          label: "สาเหตุที่แพ้ (Lost)",
+          hint: "ตัวเลือกเมื่อปิดดีลเป็น Lost — ใช้สรุปบน SE Dashboard",
+        },
+        {
+          key: "se_customer_segments" as const,
+          label: "Segment ลูกค้า (ตลาด)",
+          hint: "เช่น โรงพยาบาลรัฐขนาดใหญ่, OEM, เอกชน — ใช้เลือกบนดีล (Pipeline / Deals)",
+        },
+      ] satisfies { key: SEListKey; label: string; hint: string }[],
     [],
   )
+
+  function addPipelineStage() {
+    setSESettings((prev) => ({
+      ...prev,
+      se_pipeline_stages: [
+        ...prev.se_pipeline_stages,
+        {
+          name: `stage-${prev.se_pipeline_stages.length + 1}`,
+          min_closing_probability: 70,
+        },
+      ],
+    }))
+  }
+
+  function updatePipelineStage(index: number, patch: Partial<SEPipelineStageRule>) {
+    setSESettings((prev) => ({
+      ...prev,
+      se_pipeline_stages: prev.se_pipeline_stages.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }))
+  }
+
+  function removePipelineStage(index: number) {
+    setSESettings((prev) => ({
+      ...prev,
+      se_pipeline_stages: prev.se_pipeline_stages.filter((_, i) => i !== index),
+    }))
+  }
+
+  function updatePPAxisLabel(index: number, label: string) {
+    setSESettings((prev) => ({
+      ...prev,
+      se_potential_performance_axes: prev.se_potential_performance_axes.map((row, i) =>
+        i === index ? { ...row, label } : row,
+      ),
+    }))
+  }
+
+  function downloadSeDealsTemplate() {
+    const blob = new Blob([`\uFEFF${buildSeDealsImportTemplateCsv()}`], { type: "text/csv;charset=utf-8" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = "se-deals-import-template.csv"
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  async function onSeDealsImportFile(ev: ChangeEvent<HTMLInputElement>) {
+    const file = ev.target.files?.[0]
+    ev.target.value = ""
+    if (!file || profile?.role !== "admin") return
+    setSeImportBusy(true)
+    setSeImportMsg(null)
+    try {
+      const rows = await parseDealImportFile(file)
+      const existing = readSEDeals([])
+      if (seImportMode === "replace") {
+        const ok = window.confirm(
+          "แทนที่ดีลทั้งหมดด้วยข้อมูลจากไฟล์? ดีลที่ไม่อยู่ในไฟล์จะถูกลบออกจากแอพ (เฉพาะ mock/local)",
+        )
+        if (!ok) {
+          setSeImportBusy(false)
+          return
+        }
+      }
+      const { deals, report } = applySeDealsImport(rows, existing, seImportMode)
+      writeSEDeals(deals)
+      const orgs = readOrganizations([])
+      writeOrganizations(mergeManyDealsIntoRegister(orgs, deals))
+      const errTail =
+        report.errors.length > 0 ? ` · ดูรายละเอียด error ใน console (${report.errors.length} แถว)` : ""
+      const errPreview =
+        report.errors.length > 0 ? `\nตัวอย่าง: ${report.errors.slice(0, 3).join(" | ")}` : ""
+      setSeImportMsg(
+        `นำเข้าแล้ว: เพิ่ม ${report.added} · อัปเดต ${report.updated} · ข้าม ${report.skipped}${errTail}${errPreview}`,
+      )
+      if (report.errors.length) console.warn("[SE deals import]", report.errors)
+    } catch (e) {
+      setSeImportMsg(`นำเข้าไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    setSeImportBusy(false)
+  }
+
+  function updateDistrictRow(index: number, patch: Partial<(typeof seSettings.health_district_targets)[0]>) {
+    setSESettings((prev) => ({
+      ...prev,
+      health_district_targets: prev.health_district_targets.map((row, i) =>
+        i === index ? { ...row, ...patch } : row,
+      ),
+    }))
+  }
 
 
   const inputClass =
@@ -718,6 +860,340 @@ function SettingsPageContent() {
                 </div>
               </div>
             ))}
+          </div>
+
+          <div className="mt-6 bg-white rounded-3xl border border-indigo-100 p-5 overflow-x-auto">
+            <p className="font-bold text-gray-900">Potential Performance (เรดาร์ SE Dashboard)</p>
+            <p className="text-xs text-gray-500 mt-1 max-w-3xl">
+              คะแนนแต่ละแกนคำนวณอัตโนมัติจากข้อมูลจริงในระบบ (ดีล/กิจกรรม) โดยใช้ key ของแกนเป็นตัว map สูตร
+            </p>
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-semibold text-gray-600">ชื่อแกนที่แสดง (key ด้านล่างใช้เก็บใน JSON — อย่าเปลี่ยนถ้าต้องการ sync กับไฟล์ภายนอก)</p>
+              <div className="flex flex-wrap gap-3">
+                {seSettings.se_potential_performance_axes.map((ax, i) => (
+                  <label key={ax.key} className="text-xs flex flex-col gap-1 min-w-[150px]">
+                    <span className="text-[10px] text-gray-400 font-mono">{ax.key}</span>
+                    <input
+                      value={ax.label}
+                      onChange={(e) => updatePPAxisLabel(i, e.target.value)}
+                      disabled={profile?.role !== "admin"}
+                      className={inputClass}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+            {seSettings.se_owners.length === 0 ? (
+              <p className="mt-4 text-sm text-amber-800 bg-amber-50 rounded-xl p-3 border border-amber-100">
+                เพิ่ม SE Owners ในการ์ดด้านบนก่อน แล้ว Dashboard จะคำนวณคะแนนให้อัตโนมัติ
+              </p>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4 text-xs text-indigo-900">
+                <p className="font-semibold">สูตร auto score ตาม key มาตรฐาน</p>
+                <p className="mt-2">
+                  responsibility = % ดีลเปิดที่มี next follow-up · target = % เป้ารายได้ที่ทำได้จริง (Won/Quota) ·
+                  pipeline = weighted open pipeline เทียบ quota · closing = win rate จากดีลปิด ·
+                  follow_up = ความสดของการติดตามจาก activity ล่าสุด · collaboration = สัดส่วน activity ข้ามทีม
+                  (service/order/training/loan/booking)
+                </p>
+                <p className="mt-2 text-[11px] text-indigo-700">
+                  หากเปลี่ยน key แกนเป็นชื่ออื่นที่ไม่ตรง keyword ระบบจะใช้ค่าเฉลี่ยจาก pipeline + closing + follow_up
+                </p>
+              </div>
+            )}
+            <p className="mt-3 text-[10px] text-gray-400">บันทึกเฉพาะชื่อแกนด้วยปุ่ม &quot;Save SE Settings&quot; ด้านบน</p>
+          </div>
+
+          <div className="mt-6 bg-white rounded-3xl border border-emerald-100 p-5">
+            <p className="font-bold text-gray-900">นำเข้าดีล SE จาก Excel / CSV</p>
+            <p className="text-xs text-gray-500 mt-1 max-w-3xl">
+              แถวแรกเป็นหัวคอลัมน์ · รองรับชื่อไทย/อังกฤษหลายแบบ (ดูรายการฟิลด์ด้านล่าง) ·{" "}
+              <strong>merge</strong> อัปเดตตาม <code className="text-[11px] bg-gray-100 px-1 rounded">deal_no</code>{" "}
+              ก่อน แล้วจึง <code className="text-[11px] bg-gray-100 px-1 rounded">id</code>
+            </p>
+            <p className="text-xs text-gray-600 mt-2 font-mono break-all leading-relaxed">
+              {SE_DEALS_IMPORT_CANONICAL_HEADERS.join(", ")}
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={downloadSeDealsTemplate}
+                disabled={profile?.role !== "admin"}
+                className="px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-semibold hover:bg-emerald-100 disabled:opacity-50 flex items-center gap-2"
+              >
+                <Download className="h-4 w-4" />
+                ดาวน์โหลดตัวอย่าง CSV
+              </button>
+              <label className="text-sm text-gray-600 flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="se_import_mode"
+                  checked={seImportMode === "merge"}
+                  onChange={() => setSeImportMode("merge")}
+                  disabled={profile?.role !== "admin"}
+                />
+                ผสาน (merge)
+              </label>
+              <label className="text-sm text-gray-600 flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="se_import_mode"
+                  checked={seImportMode === "replace"}
+                  onChange={() => setSeImportMode("replace")}
+                  disabled={profile?.role !== "admin"}
+                />
+                แทนที่ทั้งหมด (replace)
+              </label>
+              <label className="px-3 py-2 rounded-xl bg-blue-500 text-white text-sm font-semibold hover:bg-blue-600 cursor-pointer disabled:opacity-50">
+                {seImportBusy ? "กำลังอ่านไฟล์…" : "เลือกไฟล์ .xlsx / .xls / .csv"}
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  className="hidden"
+                  disabled={profile?.role !== "admin" || seImportBusy}
+                  onChange={onSeDealsImportFile}
+                />
+              </label>
+            </div>
+            {seImportMsg && (
+              <p className="mt-3 text-sm rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-gray-800">{seImportMsg}</p>
+            )}
+          </div>
+
+          <div className="mt-6 bg-white rounded-3xl border border-gray-100 p-5 overflow-x-auto">
+            <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+              <div>
+                <p className="font-bold text-gray-900">SE Pipeline Stages</p>
+                <p className="text-xs text-gray-500 mt-1 max-w-2xl">
+                  แต่ละขั้นกำหนดโอกาสปิดการขายขั้นต่ำ (%) — ค่านี้<strong>ผูกกับ Stage อัตโนมัติ</strong>: เวลาเลือก stage บน Pipeline / ฟอร์มเพิ่มดีล ระบบจะเติมโอกาสให้เท่าค่าที่ตั้งไว้ที่นี่ (แก้ที่ดีลทีหลังได้) · ใช้เป็นทั้งเกณฑ์ขอ Booking และนับ Quote funnel เมื่อโอกาสดีลถึงเกณฑ์ · Stage{" "}
+                  <strong>Lost</strong> แนะนำตั้ง <strong>0%</strong> (ดีลปิดแล้ว) — ระบบไม่ให้ขอ Booking กับดีล Won/Lost อยู่แล้ว · สาเหตุแพ้ตั้งที่รายการ
+                  &quot;สาเหตุที่แพ้&quot; ด้านบน · ถ้ามี stage ชื่อมีคำว่า <strong>forecast</strong> หรือ <strong>พยากรณ์</strong> เมื่อโอกาสดีล ≥ 80% การย้ายเข้า/ออกจาก
+                  stage นี้บน Pipeline จะขอให้ยืนยัน ECD อีกครั้ง
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addPipelineStage}
+                disabled={profile?.role !== "admin"}
+                className="px-3 py-2 rounded-xl bg-violet-50 text-violet-700 text-sm font-semibold hover:bg-violet-100 disabled:opacity-50 flex items-center gap-1"
+              >
+                <Plus className="h-4 w-4" />
+                เพิ่ม Stage
+              </button>
+            </div>
+            <table className="w-full text-sm border-collapse min-w-[480px]">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th className="py-2 pr-3">Stage</th>
+                  <th className="py-2 pr-3">
+                    โอกาสปิดขั้นต่ำ = แนะนำ (%)
+                    <span className="block font-normal text-[10px] text-gray-400 mt-0.5">ผูกกับ stage แถวเดียวกัน</span>
+                  </th>
+                  <th className="py-2 w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {seSettings.se_pipeline_stages.map((row, index) => (
+                  <tr key={index} className="border-b border-gray-50">
+                    <td className="py-2 pr-3">
+                      <input
+                        value={row.name}
+                        onChange={(e) => updatePipelineStage(index, { name: e.target.value })}
+                        className={`${inputClass} py-2`}
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={row.min_closing_probability}
+                        onChange={(e) =>
+                          updatePipelineStage(index, {
+                            min_closing_probability: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                          })
+                        }
+                        className={`${inputClass} max-w-[120px] py-2`}
+                      />
+                    </td>
+                    <td className="py-2">
+                      <button
+                        type="button"
+                        aria-label={`ลบ stage ${row.name}`}
+                        onClick={() => removePipelineStage(index)}
+                        disabled={profile?.role !== "admin"}
+                        className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-6 bg-white rounded-3xl border border-violet-100 p-5">
+            <p className="font-bold text-gray-900">Forecast integrity — ดีลในมือ</p>
+            <p className="text-xs text-gray-500 mt-1 max-w-2xl">
+              เมื่อ SE ติ๊ก &quot;ดีลในมือ&quot; บน Pipeline โอกาสจะถูกบังคับอย่างน้อยเท่าค่านี้ · ตัวเลข{" "}
+              <strong>Weighted (ฐานนโยบาย)</strong> บน Dashboard / Forecast ใช้ max(โอกาสที่ใส่, เกณฑ์ stage, ค่านี้เมื่อติ๊กในมือ)
+            </p>
+            <label className="mt-3 block text-sm max-w-[200px]">
+              <span className="text-gray-600">โอกาสขั้นต่ำดีลในมือ (%)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={seSettings.se_in_hand_min_probability}
+                onChange={(e) =>
+                  setSESettings((p) => ({
+                    ...p,
+                    se_in_hand_min_probability: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                  }))
+                }
+                disabled={profile?.role !== "admin"}
+                className={`${inputClass} mt-1`}
+              />
+            </label>
+          </div>
+
+          <div className="mt-6 space-y-6">
+            <div className="bg-white rounded-3xl border border-gray-100 p-5">
+              <p className="font-bold text-gray-900">เป้ารวมบริษัท & สัดส่วน Segment</p>
+              <p className="text-xs text-gray-500 mt-1">
+                T<sub>cap</sub> = ผลรวมเพดานเขต · T<sub>company</sub> = T<sub>cap</sub> × Achieve · แบ่ง T
+                <sub>company</sub> ตาม % ด้านล่าง (ระบบ normalize ให้รวม 100 ถ้ากรอกเพี้ยน)
+              </p>
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <label className="block text-sm">
+                  <span className="text-gray-600">Achieve factor (% ของ T_cap)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={Math.round(seSettings.company_achieve_factor * 100)}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10)
+                      setSESettings((p) => ({
+                        ...p,
+                        company_achieve_factor: Number.isFinite(n)
+                          ? Math.min(100, Math.max(0, n)) / 100
+                          : p.company_achieve_factor,
+                      }))
+                    }}
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-gray-600">รพ.ภาครัฐ (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={seSettings.segment_mix_public_hospital_pct}
+                    onChange={(e) =>
+                      setSESettings((p) => ({
+                        ...p,
+                        segment_mix_public_hospital_pct: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-gray-600">Segment อื่น (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={seSettings.segment_mix_other_pct}
+                    onChange={(e) =>
+                      setSESettings((p) => ({
+                        ...p,
+                        segment_mix_other_pct: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-gray-600">Buffer / อื่นๆ (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={seSettings.segment_mix_buffer_pct}
+                    onChange={(e) =>
+                      setSESettings((p) => ({
+                        ...p,
+                        segment_mix_buffer_pct: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl border border-gray-100 p-5 overflow-x-auto">
+              <p className="font-bold text-gray-900">เขตสุขภาพ 1–13 — เพดานปี (บาท) & Sales หลัก</p>
+              <p className="text-xs text-gray-500 mt-1">
+                ปรับเพดานตามมุมมองตลาดได้ตลอด · เลือก Sales จากรายการ SE Owners
+              </p>
+              <table className="mt-4 w-full text-sm border-collapse min-w-[520px]">
+                <thead>
+                  <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                    <th className="py-2 pr-3">เขต</th>
+                    <th className="py-2 pr-3">เพดานปี (THB)</th>
+                    <th className="py-2">Sales หลัก</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {seSettings.health_district_targets.map((row, index) => (
+                    <tr key={row.district} className="border-b border-gray-50">
+                      <td className="py-2 pr-3 whitespace-nowrap">{formatHealthDistrictLabel(row.district)}</td>
+                      <td className="py-2 pr-3">
+                        <input
+                          type="number"
+                          min={0}
+                          step={1000}
+                          value={row.annual_cap_thb || ""}
+                          onChange={(e) =>
+                            updateDistrictRow(index, {
+                              annual_cap_thb: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                            })
+                          }
+                          className={`${inputClass} max-w-[160px] py-2`}
+                        />
+                      </td>
+                      <td className="py-2">
+                        <select
+                          value={row.primary_owner}
+                          onChange={(e) => updateDistrictRow(index, { primary_owner: e.target.value })}
+                          className={`${inputClass} max-w-[220px] py-2`}
+                        >
+                          <option value="">—</option>
+                          {seSettings.se_owners.map((o) => (
+                            <option key={o} value={o}>
+                              {o}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-2xl border border-violet-100 bg-violet-50/40 p-4 text-xs text-violet-900 leading-relaxed">
+              <p className="font-bold text-violet-950 mb-1">สูตร Funnel (สรุป)</p>
+              <p>
+                โอกาสปิดต่อ Stage ใช้ทั้ง Booking และ Quote funnel · Win rate = Won / (Won + Lost) · ช่องว่างรายได้ต่อคน =
+                max(0, Quota − Won สะสม) · Pipeline เป้าหมาย ≈ ช่องว่าง / Win rate
+              </p>
+            </div>
           </div>
         </>
       )}

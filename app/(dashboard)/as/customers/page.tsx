@@ -35,6 +35,7 @@ interface Contact {
 interface Organization {
   id: string
   name: string
+  name_english?: string
   org_type: string
   org_format: string
   province: string
@@ -74,6 +75,9 @@ function OrgCard({ org, selected, onClick }: { org: Organization; selected: bool
             <p className="font-semibold text-sm text-gray-900 truncate">{org.name}</p>
             {org.one_qa && <span className="shrink-0 text-xs bg-violet-50 text-violet-700 border border-violet-200 px-1.5 py-0.5 rounded-full font-medium">One-QA</span>}
           </div>
+          {org.name_english?.trim() ? (
+            <p className="text-xs text-gray-500 truncate mb-1">{org.name_english.trim()}</p>
+          ) : null}
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <Pill color={org.org_type === "New" ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-emerald-50 text-emerald-700 border border-emerald-200"}>{org.org_type}</Pill>
             <span className="text-xs text-gray-400 truncate">{org.org_format}</span>
@@ -149,11 +153,35 @@ function ContactRow({ contact, onSetPrimary, onEdit, onDelete }: {
 
 // ─── Org Dialog ───────────────────────────────────────────────────────────────
 function OrgDialog({ org, onClose, onSave }: { org: Partial<Organization> | null; onClose: () => void; onSave: (d: Partial<Organization>) => void }) {
-  const [form, setForm] = useState({ name: org?.name ?? "", org_type: org?.org_type ?? "New", org_format: org?.org_format ?? "", province: org?.province ?? "", one_qa: org?.one_qa ?? false })
+  const [form, setForm] = useState({
+    name: org?.name ?? "",
+    name_english: org?.name_english ?? "",
+    org_type: org?.org_type ?? "New",
+    org_format: org?.org_format ?? "",
+    province: org?.province ?? "",
+    one_qa: org?.one_qa ?? false,
+  })
+  useEffect(() => {
+    setForm({
+      name: org?.name ?? "",
+      name_english: org?.name_english ?? "",
+      org_type: org?.org_type ?? "New",
+      org_format: org?.org_format ?? "",
+      province: org?.province ?? "",
+      one_qa: org?.one_qa ?? false,
+    })
+  }, [org])
   const info = getProvinceInfo(form.province)
   function submit(e: React.FormEvent) {
     e.preventDefault()
-    onSave({ ...org, ...form, region: info?.region ?? "", health_district: info?.healthDistrict ?? 0 })
+    const ne = form.name_english.trim()
+    onSave({
+      ...org,
+      ...form,
+      name_english: ne || undefined,
+      region: info?.region ?? "",
+      health_district: info?.healthDistrict ?? 0,
+    })
     onClose()
   }
   return (
@@ -170,6 +198,15 @@ function OrgDialog({ org, onClose, onSave }: { org: Partial<Organization> | null
             <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
               placeholder="ชื่อโรงพยาบาล / คลินิก" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">ชื่อหน่วยงาน (อังกฤษ)</label>
+            <input
+              value={form.name_english}
+              onChange={(e) => setForm((f) => ({ ...f, name_english: e.target.value }))}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              placeholder="ถ้ามี — แยกจากชื่อไทย"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -381,7 +418,11 @@ export default function CustomersPage() {
 
   const filtered = customerFacingOrgs.filter((o) => {
     const q = search.toLowerCase()
-    return (o.name.toLowerCase().includes(q) || o.contacts.some(c => c.name.toLowerCase().includes(q))) &&
+    return (
+        o.name.toLowerCase().includes(q) ||
+        (o.name_english || "").toLowerCase().includes(q) ||
+        o.contacts.some((c) => c.name.toLowerCase().includes(q))
+      ) &&
       (filterType === "ทั้งหมด" || o.org_type === filterType) &&
       (filterRegion === "ทั้งหมด" || o.region === filterRegion)
   })
@@ -404,6 +445,7 @@ export default function CustomersPage() {
         contacts: [],
         created_at: new Date().toISOString(),
         name: data.name ?? "",
+        name_english: (data.name_english || "").trim() || undefined,
         org_type: data.org_type ?? "New",
         org_format: data.org_format ?? "",
         province: data.province ?? "",
@@ -643,6 +685,9 @@ export default function CustomersPage() {
                   </div>
                   <div>
                     <h2 className="text-xl font-bold text-gray-900">{selected.name}</h2>
+                    {selected.name_english?.trim() ? (
+                      <p className="text-sm text-gray-500 mt-0.5">{selected.name_english.trim()}</p>
+                    ) : null}
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                       <Pill color={selected.org_type === "New" ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-emerald-50 text-emerald-700 border border-emerald-200"}>{selected.org_type}</Pill>
                       <Pill color="bg-gray-100 text-gray-600">{selected.org_format}</Pill>

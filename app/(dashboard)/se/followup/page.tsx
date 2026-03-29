@@ -17,7 +17,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { FollowupStatusBadge } from "@/components/ui/status-badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatDate } from "@/lib/utils"
-import { AS_STORE_KEYS, readSESettings } from "@/lib/mock/as-store"
+import { AS_STORE_KEYS, initialSESettingsForSSR, readSESettings } from "@/lib/mock/as-store"
+import { sortedOrgCustomerNames } from "@/lib/se/se-org-customers"
 import { useAuth } from "@/hooks/useAuth"
 import { Badge } from "@/components/ui/badge"
 
@@ -44,7 +45,9 @@ const followupSchema = z.object({
 
 type FollowupForm = z.infer<typeof followupSchema>
 
-const today = new Date().toISOString().split("T")[0]
+function utcYmd() {
+  return new Date().toISOString().split("T")[0]
+}
 
 export default function FollowupPage() {
   const { profile } = useAuth()
@@ -53,17 +56,26 @@ export default function FollowupPage() {
   const [filterStatus, setFilterStatus] = useState("all")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Followup | null>(null)
-  const [seSettings, setSESettings] = useState(readSESettings())
+  const [seSettings, setSESettings] = useState(() => initialSESettingsForSSR())
+  const [customerOptions, setCustomerOptions] = useState<string[]>([])
+  const [todayYmd, setTodayYmd] = useState("")
   const { toast } = useToast()
 
   useEffect(() => {
-    const sync = () => setSESettings(readSESettings())
+    setTodayYmd(utcYmd())
+  }, [])
+
+  useEffect(() => {
+    const sync = () => {
+      setSESettings(readSESettings())
+      setCustomerOptions(sortedOrgCustomerNames())
+    }
     const onStorage = (ev: StorageEvent) => {
-      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings) sync()
+      if (!ev.key || ev.key === AS_STORE_KEYS.seSettings || ev.key === AS_STORE_KEYS.orgs) sync()
     }
     const onStoreUpdated = (ev: Event) => {
       const key = (ev as CustomEvent<{ key?: string }>).detail?.key
-      if (key === AS_STORE_KEYS.seSettings) sync()
+      if (key === AS_STORE_KEYS.seSettings || key === AS_STORE_KEYS.orgs) sync()
     }
     sync()
     window.addEventListener("storage", onStorage)
@@ -76,7 +88,7 @@ export default function FollowupPage() {
 
   const { register, handleSubmit, setValue, reset } = useForm<FollowupForm>({
     resolver: zodResolver(followupSchema),
-    defaultValues: { status: "pending", due_date: today },
+    defaultValues: { status: "pending", due_date: "" },
   })
 
   const ownerName = profile?.full_name?.trim() || ""
@@ -89,13 +101,17 @@ export default function FollowupPage() {
     return matchSearch && matchStatus
   })
 
-  const overdue = visibleFollowups.filter(f => f.status === "pending" && f.due_date < today)
-  const pending = visibleFollowups.filter(f => f.status === "pending" && f.due_date >= today)
+  const overdue = !todayYmd
+    ? []
+    : visibleFollowups.filter((f) => f.status === "pending" && f.due_date < todayYmd)
+  const pending = !todayYmd
+    ? visibleFollowups.filter((f) => f.status === "pending")
+    : visibleFollowups.filter((f) => f.status === "pending" && f.due_date >= todayYmd)
   const done = visibleFollowups.filter(f => f.status === "done")
 
   function openAdd() {
     setEditTarget(null)
-    reset({ status: "pending", due_date: today, owner: isAdmin ? "" : ownerName })
+    reset({ status: "pending", due_date: utcYmd(), owner: isAdmin ? "" : ownerName })
     setDialogOpen(true)
   }
 
@@ -205,7 +221,7 @@ export default function FollowupPage() {
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-10">ไม่พบข้อมูล</TableCell>
                 </TableRow>
               ) : filtered.map(f => {
-                const isOverdue = f.status === "pending" && f.due_date < today
+                const isOverdue = !!todayYmd && f.status === "pending" && f.due_date < todayYmd
                 return (
                   <TableRow key={f.id} className={isOverdue ? "bg-destructive/5" : ""}>
                     <TableCell>
@@ -255,7 +271,13 @@ export default function FollowupPage() {
                 <Label>ลูกค้า *</Label>
                 <Select onValueChange={v => setValue("customer_name", v)} defaultValue={editTarget?.customer_name}>
                   <SelectTrigger><SelectValue placeholder="เลือกลูกค้า" /></SelectTrigger>
-                  <SelectContent>{seSettings.se_customers.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>
+                    {customerOptions.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
