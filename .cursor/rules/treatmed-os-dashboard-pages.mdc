@@ -1,0 +1,25 @@
+---
+description: Conventions for AS/SE dashboard pages, tabs, and cross-module UI
+globs: app/(dashboard)/**/*.tsx
+alwaysApply: false
+---
+
+# Dashboard pages (AS / SE)
+
+## โครงสร้าง
+- เส้นทางหลัก: `app/(dashboard)/as/*`, `app/(dashboard)/se/*`, `app/(dashboard)/settings/page.tsx`
+- Layout/sidebar: `components/layout/Sidebar.tsx` — เพิ่มเมนูใหม่ให้สอดคล้อง role
+
+## Service Request (AS)
+- Tabs: งานหลัก / จาก Stock / จาก SE / Cal จาก Repair — นับ badge จาก state ที่ sync กับ store
+- หลังรับงาน: reset search/filter ที่อาจซ่อน job ใหม่; persist jobs + inbox ทันทีเมื่อจำเป็น
+- งาน **QC ก่อนเข้า Stock** (จาก stock calibration + symptom QC): ใช้ flow สถานะแยกจาก repair ทั่วไป — อย่าบังคับ quotation block เดียวกันโดยไม่ตั้งใจ
+
+## SE → AS feedback
+- ใช้ id เดียวกันระหว่างคำขอ SE กับ `source_dispatch_id` บน job เพื่อแสดงสถานะจาก AS ในหน้า SE
+
+## Settings
+- Global / AS / SE / Product catalog — ค่าที่ UI อ่านต้องมาจาก `read*` หลัง save ไม่ใช่แค่ state ใน memory ของหน้าเดียว
+
+## สไตล์
+- การ์ด glass/rounded, ปุ่ม primary ชัด — สอดคล้องกฎ domain

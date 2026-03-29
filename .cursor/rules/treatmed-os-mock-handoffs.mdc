@@ -1,0 +1,24 @@
+---
+description: Mock store, inbox handoffs, idempotency, and realtime sync for AS/SE/Stock
+globs: lib/mock/**/*.ts
+alwaysApply: false
+---
+
+# Mock store & handoff patterns
+
+## แหล่งความจริง (localStorage keys)
+- ดู `KEYS` และ helpers ใน `lib/mock/as-store.ts` — อย่า duplicate key string แยกไฟล์
+- Jobs: `as_service_jobs`; Stock inbox: `as_stock_dispatches`; SE inbox: `as_se_incoming_requests`; Repair→Cal: `as_repair_to_cal_requests`
+
+## Handoff ที่ปลอดภัย
+- เชื่อมต้นทางกับ job ด้วย **`source` + `source_dispatch_id`** เมื่อรับงานจาก SE / dispatch id จาก stock / repair-cal request id
+- รับงาน: อ่าน store ล่าสุดก่อนสร้าง job; ถ้ามี job แล้วให้ทำความสะอาด inbox อย่างเดียว (ไม่สร้างซ้ำ)
+- เขียน store หลาย key: พยายาม persist ชุดที่เกี่ยวข้องพร้อมกันแล้วค่อย `setState` เพื่อลด race กับ polling/event
+
+## Realtime / loop ป้องกัน
+- `writeStore` ยิง `as-store-updated` เฉพาะเมื่อ JSON เปลี่ยนจริง — อย่าเขียนให้เกิด update depth loop
+- หน้าที่ subscribe: `storage` + `as-store-updated` + optional interval fallback
+
+## การเพิ่ม inbox/entity ใหม่
+- เพิ่ม type + `read*` / `write*` / `append*` / `remove*` ใน `as-store.ts`
+- อัปเดตทุก consumer (AS Service Request, Stock, SE) และ badge/notification ให้สอดคล้อง

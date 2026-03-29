@@ -1,0 +1,36 @@
+---
+description: TreatMed OS — domain scope and end-to-end cross-module thinking (SE + AS + Stock)
+alwaysApply: true
+---
+
+# TreatMed OS — ขอบเขตและการคิดแบบครบลูป
+
+## โปรดักต์
+- **SE (Sales / Sales Engineering)**: pipeline, deal, forecast, คำขอบริการที่ส่งต่อ AS
+- **AS (After Service)**: Repair & Calibration, SLA, quotation/parts flow, proactive calibration
+- **Stock**: รับเข้า/จ่ายงาน, booking, loan/demo, QC ก่อนเข้า stock, เชื่อม inbox ไป Service
+
+อ้างอิงสเปกเต็ม: `CLAUDE.md`
+
+## หลักการคิดวิเคราะห์ (เชื่อมโยงทั้งระบบ)
+ก่อนออกแบบหรือแก้ฟีเจอร์ ให้ตอบให้ได้อย่างน้อย:
+1. **จุดเริ่ม**: ใครเป็นผู้สั่งงาน (SE / Stock / ลูกค้า / ช่าง / Admin)?
+2. **ข้อมูลหลัก**: org, contact, SN, model, job type, routing, PO/RMA ที่เกี่ยว?
+3. **ขั้นถัดไป**: งานไป tab/inbox ไหน หรือสร้าง job ใน `as_service_jobs` เมื่อไหร่?
+4. **Stock impact**: ตัดจ่าย/คืน/RMA/reserve/loan กระทบ qty หรือ status อย่างไร?
+5. **การตอบกลับผู้สั่ง**: ผู้สั่งเห็นสถานะอัปเดตได้อย่างไร (เช่น `source_dispatch_id`, หน้า SE)?
+6. **Edge cases**: double-click, sync ชนกัน, filter ค้าง, งาน QC vs Repair flow ต่างกัน
+
+## Flow ที่ต้องไม่ขาดตอน (high level)
+- **SE → AS**: คำขอเข้า inbox AS → รับงาน → job + track กลับผู้ขอ
+- **Stock → AS**: dispatch / QC → inbox → รับงาน → job; QC ใช้ flow สถานะเฉพาะเมื่อเป็นงาน QC ก่อนเข้า stock
+- **Repair → Cal**: request แยก inbox → รับงาน → calibration job
+- **Settings**: dropdown / workflow status เป็นของจริงใน UI — อย่า hardcode ซ้ำโดยไม่ sync กับ `read*Settings`
+
+## UI / UX
+- Apple-style: ขาว โปร่ง `rounded-3xl` whitespace
+- สี: primary blue-500, violet (One-QA / SE), emerald (Existing), amber (New)
+
+## Stack & dev
+- Next.js App Router, React 19, TS, Tailwind, shadcn/ui
+- Supabase ยังไม่ต่อ — mock ใช้ `localStorage` ผ่าน `lib/mock/as-store.ts`; อย่าทำลาย idempotent handoff และ event sync ที่มีอยู่

@@ -1,0 +1,30 @@
+---
+description: Enforce cross-module consistency for related changes
+alwaysApply: true
+---
+
+# TreatMed OS — Cross-Module Consistency
+
+เมื่อแก้จุดใดที่เป็นข้อมูลหรือ flow ร่วมกัน ต้องไล่ผลกระทบและแก้ให้ครบทั้งระบบก่อนจบงาน
+
+## Mandatory checklist
+- **Data model first:** ถ้าเพิ่ม/แก้ field ใน type/store ให้แก้ทุก interface/type mirror ที่ใช้ร่วมกัน
+- **Sync paths:** อัปเดตทุกจุด sync/import/upsert/merge ที่เกี่ยวข้อง (เช่น SE -> AS register, settings import)
+- **UI parity:** ฟอร์มสร้าง/แก้ไข, list/card, detail view และ search/filter ต้องรองรับ field ใหม่อย่างสอดคล้อง
+- **Persistence parity:** read/write localStorage keys, fallback seed, migration-safe default ต้องไม่ทำข้อมูลหาย
+- **Workflow parity:** สถานะ/notification/handoff ที่พึ่งพาข้อมูลนั้นต้องอัปเดตครบทุกหน้า
+- **Validation pass:** หลังแก้ต้องเช็ค lint/type ของไฟล์ที่แตะ และแก้ error ที่เกิดจากการเปลี่ยนแปลงนั้น
+
+## Operating rule
+- ห้ามส่งงานแบบแก้เฉพาะหน้าเดียวถ้ายังมี dependency ที่ยังไม่อัปเดต
+- ถ้ายังแก้ไม่ครบ loop ให้สรุปช่องว่างที่เหลือและปิดงานเมื่อครบเท่านั้น
+
+## Impact checklist ในคำตอบ (บังคับเมื่อแตะข้อมูล/flow ร่วม)
+ถ้างานนี้แก้ type/store/sync/UI ที่หลายโมดูลใช้ร่วมกัน ให้ใส่ใน **ข้อความตอบผู้ใช้** (สั้น ๆ ก็ได้) ก่อนถือว่าจบงาน:
+
+1. **สิ่งที่แตะ:** ไฟล์/โมดูลหลัก (เช่น `as-store`, SE pipeline, Customer Register)
+2. **สิ่งที่อัปเดตแล้ว:** model, sync path, UI จุดไหนบ้าง
+3. **สิ่งที่ไม่แตะ (ถ้ามี):** เหตุผลสั้น ๆ หรือขอบเขตที่ตั้งใจไม่รวม
+4. **ความเสี่ยง/ข้อมูลเก่า:** localStorage/seed/migration กระทบผู้ใช้เดิมอย่างไร
+
+ถ้ายังทำไม่ครบข้อ 1–2 ให้บอกชัดว่าเหลืออะไร แทนการนิ่งเงียบ
