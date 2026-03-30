@@ -4088,7 +4088,7 @@ export default function StockPage() {
               <option value="qty_high">จำนวน มาก → น้อย</option>
             </select>
           </div>
-          <div className="flex-1 overflow-auto rounded-2xl border border-white/70 bg-white/70 backdrop-blur-xl shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
+          <div className="flex-1 overflow-x-auto overflow-y-visible rounded-2xl border border-white/70 bg-white/70 backdrop-blur-xl shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
             <table className="w-full min-w-[1080px] text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
@@ -4096,7 +4096,7 @@ export default function StockPage() {
                     <th
                       key={h}
                       className={`px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap ${
-                        h === "Quick Action" ? "min-w-[240px]" : ""
+                        h === "Quick Action" ? "min-w-[280px]" : ""
                       }`}
                     >
                       {h}
@@ -4110,7 +4110,7 @@ export default function StockPage() {
                   const agingDays = getStockAgingDays(item)
                   return (
                     <tr key={item.id} className={`hover:bg-gray-50 transition-colors ${isLow ? "bg-red-50/50" : ""}`}>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 min-w-[280px]">
                         <p className="font-semibold text-gray-900">{item.name}</p>
                         {item.has_serial && item.serial_number
                           ? <p className="font-mono text-xs text-blue-600 mt-0.5">SN: {item.serial_number}</p>
@@ -4169,7 +4169,7 @@ export default function StockPage() {
                               e.stopPropagation()
                               setActionMenuId((prev) => (prev === item.id ? null : item.id))
                             }}
-                            className="w-full min-w-[220px] inline-flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                            className="w-full min-w-[240px] inline-flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
                           >
                             <span>Quick Action</span>
                             <MoreHorizontal className="h-3.5 w-3.5 text-gray-400" />
@@ -4177,7 +4177,7 @@ export default function StockPage() {
                           {actionMenuId === item.id && (
                             <div
                               onClick={(e) => e.stopPropagation()}
-                              className="absolute right-0 mt-1 w-72 min-w-[18rem] rounded-xl border border-gray-200 bg-white shadow-lg z-20 p-2 space-y-2 animate-in fade-in zoom-in-95 duration-150"
+                              className="absolute left-0 mt-1 w-72 min-w-[18rem] rounded-xl border border-gray-200 bg-white shadow-lg z-30 p-2 space-y-2 animate-in fade-in zoom-in-95 duration-150"
                             >
                               {(item.status === "in_stock" || item.status === "reserved" || item.status === "sold") && (
                                 <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "send_job") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 hover:bg-blue-50">
