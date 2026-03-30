@@ -351,7 +351,14 @@ export default function CustomersPage() {
       const syncDb = async () => {
         try {
           const res = await fetch("/api/as/organizations")
-          if (!res.ok) return
+          if (!res.ok) {
+            // If DB/API fails, do not render blank page.
+            const localLoaded = readOrganizations([]) as Organization[]
+            const visibleLocal = localLoaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
+            setOrgs(localLoaded)
+            setSelected(visibleLocal[0] ?? null)
+            return
+          }
           const loaded = (await res.json()) as Organization[]
           if (loaded.length === 0) {
             // If DB is empty, bootstrap from existing localStorage to avoid "blank register".
