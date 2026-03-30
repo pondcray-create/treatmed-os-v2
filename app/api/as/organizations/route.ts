@@ -67,69 +67,83 @@ function toPayloadOrganization(o: {
 }
 
 export async function GET() {
-  const orgs = await prisma.organization.findMany({
-    include: { contacts: true },
-    orderBy: { createdAt: "desc" },
-  })
-  return NextResponse.json(orgs.map(toPayloadOrganization))
+  try {
+    const orgs = await prisma.organization.findMany({
+      include: { contacts: true },
+      orderBy: { createdAt: "desc" },
+    })
+    return NextResponse.json(orgs.map(toPayloadOrganization))
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 },
+    )
+  }
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as { orgs?: ASOrganizationPayload[] }
-  const orgs = body?.orgs
-  if (!Array.isArray(orgs)) {
-    return NextResponse.json({ ok: false, error: "Missing orgs[]" }, { status: 400 })
-  }
-
-  await prisma.$transaction(async (tx) => {
-    for (const o of orgs) {
-      // Upsert organization by explicit id (UI generates it).
-      await tx.organization.upsert({
-        where: { id: o.id },
-        update: {
-          name: o.name,
-          nameEnglish: (o.name_english ?? null) as string | null,
-          orgType: o.org_type,
-          orgFormat: o.org_format ?? null,
-          province: o.province ?? null,
-          region: o.region ?? null,
-          healthDistrict: o.health_district && o.health_district > 0 ? o.health_district : null,
-          oneQa: o.one_qa,
-          // createdAt remains as original when record exists.
-        },
-        create: {
-          id: o.id,
-          name: o.name,
-          nameEnglish: (o.name_english ?? null) as string | null,
-          orgType: o.org_type,
-          orgFormat: o.org_format ?? null,
-          province: o.province ?? null,
-          region: o.region ?? null,
-          healthDistrict: o.health_district && o.health_district > 0 ? o.health_district : null,
-          oneQa: o.one_qa,
-          createdAt: o.created_at ? new Date(o.created_at) : new Date(),
-        },
-      })
-
-      // Replace contacts for this organization.
-      await tx.contact.deleteMany({ where: { organizationId: o.id } })
-      if (Array.isArray(o.contacts) && o.contacts.length > 0) {
-        await tx.contact.createMany({
-          data: o.contacts.map((c) => ({
-            id: c.id,
-            organizationId: o.id,
-            name: c.name,
-            position: c.position || null,
-            email: c.email || null,
-            tel: c.tel || null,
-            isPrimary: !!c.is_primary,
-            createdAt: new Date(),
-          })),
-        })
-      }
+  try {
+    const body = (await req.json()) as { orgs?: ASOrganizationPayload[] }
+    const orgs = body?.orgs
+    if (!Array.isArray(orgs)) {
+      return NextResponse.json({ ok: false, error: "Missing orgs[]" }, { status: 400 })
     }
-  })
 
-  return NextResponse.json({ ok: true })
+    await prisma.$transaction(async (tx) => {
+      for (const o of orgs) {
+        // Upsert organization by explicit id (UI generates it).
+        await tx.organization.upsert({
+          where: { id: o.id },
+          update: {
+            name: o.name,
+            nameEnglish: (o.name_english ?? null) as string | null,
+            orgType: o.org_type,
+            orgFormat: o.org_format ?? null,
+            province: o.province ?? null,
+            region: o.region ?? null,
+            healthDistrict: o.health_district && o.health_district > 0 ? o.health_district : null,
+            oneQa: o.one_qa,
+            // createdAt remains as original when record exists.
+          },
+          create: {
+            id: o.id,
+            name: o.name,
+            nameEnglish: (o.name_english ?? null) as string | null,
+            orgType: o.org_type,
+            orgFormat: o.org_format ?? null,
+            province: o.province ?? null,
+            region: o.region ?? null,
+            healthDistrict: o.health_district && o.health_district > 0 ? o.health_district : null,
+            oneQa: o.one_qa,
+            createdAt: o.created_at ? new Date(o.created_at) : new Date(),
+          },
+        })
+
+        // Replace contacts for this organization.
+        await tx.contact.deleteMany({ where: { organizationId: o.id } })
+        if (Array.isArray(o.contacts) && o.contacts.length > 0) {
+          await tx.contact.createMany({
+            data: o.contacts.map((c) => ({
+              id: c.id,
+              organizationId: o.id,
+              name: c.name,
+              position: c.position || null,
+              email: c.email || null,
+              tel: c.tel || null,
+              isPrimary: !!c.is_primary,
+              createdAt: new Date(),
+            })),
+          })
+        }
+      }
+    })
+
+    return NextResponse.json({ ok: true })
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 },
+    )
+  }
 }
 
