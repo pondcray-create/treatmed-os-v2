@@ -1,0 +1,431 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  admin
+  as_staff
+  stock
+  technician
+  se_staff
+}
+
+enum ServiceJobType {
+  repair
+  calibration
+  preventive_maintenance
+  commissioning
+}
+
+enum ServiceJobSource {
+  manual
+  se_request
+  stock_dispatch
+  proactive
+}
+
+model UserProfile {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  fullName  String
+  role      UserRole @default(as_staff)
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignedJobs ServiceJob[] @relation("assignedTechnician")
+  createdJobs  ServiceJob[] @relation("createdBy")
+
+  @@map("user_profiles")
+}
+
+model Organization {
+  id             String   @id @default(cuid())
+  name           String
+  nameEnglish    String?
+  orgType        String
+  orgFormat      String?
+  province       String?
+  region         String?
+  healthDistrict Int?
+  oneQa          Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  contacts                   Contact[]
+  serviceJobs                ServiceJob[]                @relation("jobCustomerOrg")
+  soldStockItems             StockItem[]                 @relation("soldToOrg")
+  proactiveCalibrationAssets ProactiveCalibrationAsset[]
+
+  @@unique([name])
+  @@index([province, region, healthDistrict])
+  @@map("as_organizations")
+}
+
+model Contact {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  position       String?
+  email          String?
+  tel            String?
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, isPrimary])
+  @@map("as_contacts")
+}
+
+model ServiceJob {
+  id                      String           @id @default(cuid())
+  jobNo                   String           @unique
+  jobType                 ServiceJobType
+  status                  String
+  source                  ServiceJobSource @default(manual)
+  sourceDispatchId        String?
+  customerOrgId           String?
+  customerOrgNameSnapshot String
+  customerName            String?
+  manufacturer            String?
+  model                   String?
+  serialNumber            String?
+  routing                 String?
+  rmaCode                 String?
+  symptom                 String?
+  symptomActual           String?
+  fixMethod               String?
+  receivedDate            DateTime?
+  calibrationDate         DateTime?
+  dueDate                 DateTime?
+  trackingIn              String?
+  trackingOut             String?
+  invoiceNo               String?
+  warrantyDays            String?
+  quoteData               Json?
+  partsUsed               Json?
+  photosBefore            Json?
+  photosAfter             Json?
+  lab                     String?
+  stockReturnReceivedAt   DateTime?
+  rawPayload             Json?
+  assignedToId            String?
+  createdById             String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  customerOrg        Organization?   @relation("jobCustomerOrg", fields: [customerOrgId], references: [id], onDelete: SetNull)
+  assignedTo         UserProfile?    @relation("assignedTechnician", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdBy          UserProfile?    @relation("createdBy", fields: [createdById], references: [id], onDelete: SetNull)
+  partsRequests      PartsRequest[]
+  stockDispatchLinks StockDispatch[]
+
+  @@index([status, jobType])
+  @@index([customerOrgId, createdAt])
+  @@index([serialNumber])
+  @@map("as_service_jobs")
+}
+
+model StockItem {
+  id                  String    @id @default(cuid())
+  name                String
+  brand               String?
+  model               String?
+  category            String
+  status              String
+  qty                 Int       @default(0)
+  unit                String    @default("pcs")
+  serialNumber        String?
+  minStock            Int?
+  poNo                String?
+  supplier            String?
+  stockedAt           DateTime?
+  soldAt              DateTime?
+  soldToOrgId         String?
+  lastCalibrationDate DateTime?
+  calibrationDueDate  DateTime?
+  metadata            Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  soldToOrg    Organization?      @relation("soldToOrg", fields: [soldToOrgId], references: [id], onDelete: SetNull)
+  transactions StockTransaction[]
+  bookingRows  StockBooking[]
+  dispatchRows StockDispatch[]
+
+  @@index([category, status])
+  @@index([serialNumber])
+  @@map("as_stock_items")
+}
+
+model StockTransaction {
+  id          String   @id @default(cuid())
+  stockItemId String?
+  txType      String
+  qtyDelta    Int
+  note        String?
+  refType     String?
+  refId       String?
+  actorName   String?
+  createdAt   DateTime @default(now())
+
+  stockItem StockItem? @relation(fields: [stockItemId], references: [id], onDelete: SetNull)
+
+  @@index([stockItemId, createdAt])
+  @@index([refType, refId])
+  @@map("as_stock_transactions")
+}
+
+model StockBooking {
+  id            String    @id @default(cuid())
+  stockItemId   String?
+  itemName      String
+  salesName     String
+  customerName  String
+  bookedDate    DateTime
+  requestStatus String    @default("pending")
+  source        String?
+  seDealId      String?
+  note          String?
+  stockFeedback String?
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  stockItem StockItem? @relation(fields: [stockItemId], references: [id], onDelete: SetNull)
+
+  @@index([requestStatus, bookedDate])
+  @@index([seDealId])
+  @@map("as_stock_bookings")
+}
+
+model StockDispatch {
+  id           String   @id @default(cuid())
+  stockItemId  String?
+  serviceJobId String?
+  dispatchType String
+  qty          Int      @default(1)
+  status       String
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  stockItem  StockItem?  @relation(fields: [stockItemId], references: [id], onDelete: SetNull)
+  serviceJob ServiceJob? @relation(fields: [serviceJobId], references: [id], onDelete: SetNull)
+
+  @@index([status, dispatchType])
+  @@index([serviceJobId])
+  @@map("as_stock_dispatches")
+}
+
+model PartsRequest {
+  id           String   @id @default(cuid())
+  serviceJobId String
+  status       String
+  note         String?
+  partsData    Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  serviceJob ServiceJob @relation(fields: [serviceJobId], references: [id], onDelete: Cascade)
+
+  @@index([serviceJobId, status])
+  @@map("as_parts_requests")
+}
+
+model ProactiveCalibrationAsset {
+  id                  String    @id @default(cuid())
+  customerOrgId       String?
+  customerOrgName     String
+  customerName        String?
+  manufacturer        String
+  model               String
+  serialNumber        String
+  lastCalibrationDate DateTime?
+  dueDate             DateTime
+  retiredAt           DateTime?
+  retiredReason       String?
+  note                String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  customerOrg Organization? @relation(fields: [customerOrgId], references: [id], onDelete: SetNull)
+
+  @@unique([serialNumber])
+  @@index([dueDate, retiredAt])
+  @@map("as_proactive_calibration_assets")
+}
+
+model SEDeal {
+  id                  String    @id @default(cuid())
+  dealNo              String    @unique
+  title               String
+  customerName        String
+  customerNameEnglish String?
+  marketSegment       String?
+  productModel        String?
+  manufacturer        String?
+  productLines        Json?
+  stage               String
+  value               Decimal   @db.Decimal(18, 2)
+  probability         Int
+  expectedCloseDate   DateTime
+  owner               String?
+  province            String?
+  region              String?
+  healthDistrict      Int?
+  customerSegment     String?
+  nextFollowupOn      DateTime?
+  adminQuoteNo        String?
+  onEbidding          Boolean   @default(false)
+  declaredInHand      Boolean   @default(false)
+  belowStageProbNote  String?
+  lostReason          String?
+  lostReasonNote      String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  activities      SEDealActivity[]
+  orderRequests   SEOrderRequest[]
+  serviceRequests SEServiceRequest[]
+
+  @@index([owner, stage])
+  @@index([customerName, createdAt])
+  @@map("se_deals")
+}
+
+model SEDealActivity {
+  id           String   @id @default(cuid())
+  dealId       String
+  activityType String
+  source       String
+  subject      String
+  note         String?
+  occurredOn   DateTime
+  actorName    String?
+  meta         Json?
+  createdAt    DateTime @default(now())
+
+  deal SEDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId, occurredOn])
+  @@map("se_deal_activities")
+}
+
+model SEServiceRequest {
+  id            String    @id @default(cuid())
+  refNo         String    @unique
+  dealId        String?
+  customerName  String
+  dealTitle     String
+  requestType   String
+  description   String
+  status        String
+  scheduledDate DateTime?
+  owner         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  deal SEDeal? @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("se_service_requests")
+}
+
+model SEOrderRequest {
+  id                String    @id @default(cuid())
+  dealId            String
+  dealNo            String
+  customerName      String
+  dealTitle         String
+  customerPoNo      String
+  adminQuoteNo      String?
+  owner             String?
+  note              String?
+  stockPoVerified   Boolean   @default(false)
+  stockPoVerifiedAt DateTime?
+  stockPoVerifiedBy String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  deal SEDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([owner, createdAt])
+  @@map("se_order_requests")
+}
+
+model GlobalSetting {
+  id              String   @id @default("global")
+  appName         String
+  defaultCurrency String
+  updatedAt       DateTime @updatedAt
+
+  @@map("global_settings")
+}
+
+model KPISetting {
+  id         String   @id @default(cuid())
+  module     String
+  kpiName    String
+  formula    String
+  target     String
+  resetCycle String
+  updatedAt  DateTime @updatedAt
+
+  @@index([module])
+  @@map("kpi_settings")
+}
+
+model DropdownConfig {
+  id                 String   @id @default("as_dropdown")
+  stockModels        Json?
+  stockManufacturers Json?
+  calibrationLabs    Json?
+  serviceTechnicians Json?
+  updatedAt          DateTime @updatedAt
+
+  @@map("as_dropdown_config")
+}
+
+model ASWorkflowSetting {
+  id                  String   @id @default("as_workflow")
+  serviceStatuses     Json
+  calibrationStatuses Json
+  updatedAt           DateTime @updatedAt
+
+  @@map("as_workflow_settings")
+}
+
+model SESetting {
+  id                           String   @id @default("se_setting")
+  seOwners                     Json
+  seLostReasons                Json
+  seCustomerSegments           Json
+  sePotentialPerformanceAxes   Json
+  sePotentialPerformanceScores Json
+  sePipelineStages             Json
+  companyAchieveFactor         Decimal  @db.Decimal(5, 4)
+  segmentMixPublicHospitalPct  Int
+  segmentMixOtherPct           Int
+  segmentMixBufferPct          Int
+  healthDistrictTargets        Json
+  seInHandMinProbability       Int
+  updatedAt                    DateTime @updatedAt
+
+  @@map("se_settings")
+}
+
+model AppStateBlob {
+  key       String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
+
+  @@map("app_state_blobs")
+}

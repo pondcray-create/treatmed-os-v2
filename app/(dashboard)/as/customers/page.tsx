@@ -338,32 +338,77 @@ export default function CustomersPage() {
   const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
   const [stockItems, setStockItems] = useState<StockCustomerEquipment[]>([])
 
+  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+
   const customerFacingOrgs = useMemo(
     () => orgs.filter((o) => !isInternalStockCustomerOrgName(o.name)),
     [orgs],
   )
 
   useEffect(() => {
-    const syncOrgs = () => {
+    if (useDb) {
+      const syncDb = async () => {
+        try {
+          const res = await fetch("/api/as/organizations")
+          if (!res.ok) return
+          const loaded = (await res.json()) as Organization[]
+          if (loaded.length === 0) {
+            // If DB is empty, bootstrap from existing localStorage to avoid "blank register".
+            const localLoaded = readOrganizations([]) as Organization[]
+            if (localLoaded.length > 0) {
+              void fetch("/api/as/organizations", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ orgs: localLoaded }),
+              })
+            }
+            setOrgs(localLoaded)
+            const visibleLocal = localLoaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
+            setSelected(visibleLocal[0] ?? null)
+            return
+          }
+          // Keep localStorage in sync while we are still in hybrid mode.
+          const localLoaded = readOrganizations([]) as Organization[]
+          if (localLoaded.length === 0) {
+            writeOrganizations(loaded as unknown as ASOrganization[])
+          }
+          const visible = loaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
+          setOrgs(loaded)
+          setSelected((prev) => {
+            if (prev && visible.some((o) => o.id === prev.id)) return visible.find((o) => o.id === prev.id)!
+            return visible[0] ?? null
+          })
+        } catch {
+          // fallback silently to local (keeps UI usable even if API is temporarily down)
+          const loaded = readOrganizations([]) as Organization[]
+          const visible = loaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
+          setOrgs(loaded)
+          setSelected(visible[0] ?? null)
+        }
+      }
+      void syncDb()
+      return
+    }
+
+    const syncLocal = () => {
       const loaded = readOrganizations([]) as Organization[]
       const visible = loaded.filter((o) => !isInternalStockCustomerOrgName(o.name))
       setOrgs(loaded)
       setSelected((prev) => {
-        if (prev && visible.some((o) => o.id === prev.id)) {
-          return visible.find((o) => o.id === prev.id)!
-        }
+        if (prev && visible.some((o) => o.id === prev.id)) return visible.find((o) => o.id === prev.id)!
         return visible[0] ?? null
       })
     }
-    syncOrgs()
+    syncLocal()
+
     const onStorage = (ev: StorageEvent) => {
       if (ev.key && ev.key !== AS_STORE_KEYS.orgs) return
-      syncOrgs()
+      syncLocal()
     }
     const onStoreUpdated = (ev: Event) => {
       const key = (ev as CustomEvent<{ key?: string }>).detail?.key
       if (key && key !== AS_STORE_KEYS.orgs) return
-      syncOrgs()
+      syncLocal()
     }
     window.addEventListener("storage", onStorage)
     window.addEventListener("as-store-updated", onStoreUpdated)
@@ -428,6 +473,16 @@ export default function CustomersPage() {
   })
 
   function persistOrgs(next: Organization[]) {
+    if (useDb) {
+      void fetch("/api/as/organizations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgs: next }),
+      })
+      // Hybrid mode safety: other AS pages may still read localStorage.
+      writeOrganizations(next as unknown as ASOrganization[])
+      return
+    }
     writeOrganizations(next as unknown as ASOrganization[])
   }
 

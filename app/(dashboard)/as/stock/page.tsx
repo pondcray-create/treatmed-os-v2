@@ -2090,6 +2090,35 @@ export default function StockPage() {
   const [claimFilterScope, setClaimFilterScope] = useState<"all" | "whole_unit" | "module" | "sensor">("all")
   const [claimSearchQuery, setClaimSearchQuery] = useState("")
   const [seOrderRequests, setSeOrderRequests] = useState<SEOrderRequest[]>(() => readSEOrderRequests([]))
+  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+  const DB_KEYS = {
+    stockItems: "as:stock_items",
+    stockTransactions: "as:stock_transactions",
+    stockBookings: "as:stock_bookings",
+  } as const
+
+  async function readDbBlob<T>(key: string): Promise<T | null> {
+    try {
+      const res = await fetch(`/api/as/state?key=${encodeURIComponent(key)}`)
+      if (!res.ok) return null
+      const data = (await res.json()) as { payload?: T | null }
+      return (data.payload ?? null) as T | null
+    } catch {
+      return null
+    }
+  }
+
+  async function writeDbBlob(key: string, payload: unknown) {
+    try {
+      await fetch("/api/as/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, payload }),
+      })
+    } catch {
+      // best-effort mirror during pilot
+    }
+  }
 
   const lowStock = items.filter(i => i.qty < i.min_qty && i.status === "in_stock")
   const demoOnLoan = items.filter(i => i.category === "demo" && i.status === "on_loan")
@@ -2186,19 +2215,48 @@ export default function StockPage() {
   }
 
   useEffect(() => {
-    // Hydrate from localStorage only after mount to avoid SSR/client mismatch.
-    const savedItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
-    if (savedItems && Array.isArray(savedItems)) setItems(savedItems)
+    const bootstrap = async () => {
+      // Hydrate from localStorage first to avoid SSR/client mismatch.
+      const savedItems = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems)
+      const savedTx = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
+      const savedBookings = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
+      let nextItems = savedItems && Array.isArray(savedItems) ? savedItems : items
+      let nextTx = savedTx && Array.isArray(savedTx) ? savedTx : transactions
+      let nextBookings = savedBookings && Array.isArray(savedBookings) ? savedBookings : bookings
 
-    const savedTx = tryReadJSON<StockTransaction[]>(AS_STORE_KEYS.stockTransactions)
-    if (savedTx && Array.isArray(savedTx)) setTransactions(savedTx)
-    transactionsHydratedRef.current = true
+      if (useDb) {
+        const [dbItems, dbTx, dbBookings] = await Promise.all([
+          readDbBlob<StockItem[]>(DB_KEYS.stockItems),
+          readDbBlob<StockTransaction[]>(DB_KEYS.stockTransactions),
+          readDbBlob<Booking[]>(DB_KEYS.stockBookings),
+        ])
+        if (Array.isArray(dbItems) && dbItems.length > 0) {
+          nextItems = dbItems
+        } else {
+          void writeDbBlob(DB_KEYS.stockItems, nextItems)
+        }
+        if (Array.isArray(dbTx) && dbTx.length > 0) {
+          nextTx = dbTx
+        } else {
+          void writeDbBlob(DB_KEYS.stockTransactions, nextTx)
+        }
+        if (Array.isArray(dbBookings) && dbBookings.length > 0) {
+          nextBookings = dbBookings
+        } else {
+          void writeDbBlob(DB_KEYS.stockBookings, nextBookings)
+        }
+      }
 
-    const savedBookings = tryReadJSON<Booking[]>(AS_STORE_KEYS.stockBookings)
-    if (savedBookings && Array.isArray(savedBookings)) setBookings(savedBookings)
-    bookingsHydratedRef.current = true
-    stockHydratedRef.current = true
-  }, [])
+      setItems(nextItems)
+      setTransactions(nextTx)
+      setBookings(nextBookings)
+      transactionsHydratedRef.current = true
+      bookingsHydratedRef.current = true
+      stockHydratedRef.current = true
+    }
+    void bootstrap()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useDb])
 
   useEffect(() => {
     itemsVersionRef.current = readStockItemsVersion()
@@ -2301,7 +2359,8 @@ export default function StockPage() {
       return
     }
     itemsVersionRef.current = nextVersion
-  }, [items])
+    if (useDb) void writeDbBlob(DB_KEYS.stockItems, items)
+  }, [items, useDb])
 
   useEffect(() => {
     if (!transactionsHydratedRef.current) return
@@ -2310,7 +2369,8 @@ export default function StockPage() {
       return
     }
     writeStockTransactionsLedger(transactions)
-  }, [transactions])
+    if (useDb) void writeDbBlob(DB_KEYS.stockTransactions, transactions)
+  }, [transactions, useDb])
 
   useEffect(() => {
     if (!bookingsHydratedRef.current) return
@@ -2319,7 +2379,8 @@ export default function StockPage() {
       return
     }
     writeStockBookingsLedger(bookings)
-  }, [bookings])
+    if (useDb) void writeDbBlob(DB_KEYS.stockBookings, bookings)
+  }, [bookings, useDb])
 
   useEffect(() => {
     if (!actionMenuId) return

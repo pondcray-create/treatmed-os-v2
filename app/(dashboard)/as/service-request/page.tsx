@@ -30,8 +30,11 @@ import {
   upsertOrganizationByName,
   writeJobs,
   writeJobsWithConcurrencyCheck,
+  writeIncomingSERequests,
   writeOrganizations,
+  writePartsRequests,
   writeProactiveCalibrationAssets,
+  writeRepairToCalRequests,
   writeStockDispatches,
   writeCommissioningClaimCases,
   type ASProactiveCalibrationAsset,
@@ -1129,52 +1132,178 @@ function ServiceRequestPageContent() {
   const [transitionError, setTransitionError] = useState<string>("")
   const [vtOxygenStock, setVtOxygenStock] = useState(() => getVTOxygenSensorStockRollup())
   const [stockDropdownConfig, setStockDropdownConfig] = useState(readDropdownConfig())
+  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+  const DB_KEYS = {
+    stockDispatches: "as:stock_dispatches",
+    repairToCalRequests: "as:repair_to_cal_requests",
+    partsRequests: "as:parts_requests",
+    commissioningClaimCases: "as:commissioning_claim_cases",
+    seIncomingRequests: "as:se_incoming_requests",
+  } as const
+
+  async function readDbBlob<T>(key: string): Promise<T | null> {
+    try {
+      const res = await fetch(`/api/as/state?key=${encodeURIComponent(key)}`)
+      if (!res.ok) return null
+      const data = (await res.json()) as { payload?: T | null }
+      return (data.payload ?? null) as T | null
+    } catch {
+      return null
+    }
+  }
+
+  async function writeDbBlob(key: string, payload: unknown) {
+    try {
+      await fetch("/api/as/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, payload }),
+      })
+    } catch {
+      // best-effort mirror during pilot
+    }
+  }
 
   useEffect(() => {
-    const loadedJobs = readJobs(MOCK_JOBS)
-    const loadedDispatches = readStockDispatches(MOCK_STOCK_DISPATCHES)
-    setJobs(loadedJobs)
-    setStockDispatches(loadedDispatches)
-    setRepairToCalRequests(readRepairToCalRequests([]))
-    setPartsRequests(readPartsRequests([]))
-    setCommissioningClaimCases(readCommissioningClaimCases([]))
-    setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
-    setSelected(loadedJobs[0] ?? null)
-    setHydrated(true)
+    const bootstrap = async () => {
+      let loadedJobs = readJobs(MOCK_JOBS)
+      if (useDb) {
+        try {
+          const res = await fetch("/api/as/jobs")
+          if (res.ok) {
+            const dbJobs = (await res.json()) as ServiceJob[]
+            if (dbJobs.length > 0) {
+              loadedJobs = dbJobs
+              // Hybrid safety: keep localStorage in sync for pages not migrated yet.
+              writeJobs(dbJobs)
+            } else if (loadedJobs.length > 0) {
+              // First-time bootstrap from local to DB.
+              await fetch("/api/as/jobs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ jobs: loadedJobs }),
+              })
+            }
+          }
+        } catch {
+          // keep local fallback
+        }
+      }
+      const loadedDispatches = readStockDispatches(MOCK_STOCK_DISPATCHES)
+      let loadedRepairToCal = readRepairToCalRequests([])
+      let loadedPartsReq = readPartsRequests([])
+      let loadedClaimCases = readCommissioningClaimCases([])
+      let loadedSEReq = readIncomingSERequests(MOCK_SE_REQUESTS)
 
-    const fallbackOrgs: ASOrganization[] = MOCK_ORGS.map((n, idx) => ({
-      id: `seed-${idx}`,
-      name: n,
-      org_type: "New",
-      org_format: "",
-      province: "",
-      region: "",
-      health_district: 0,
-      one_qa: false,
-      contacts: [],
-      created_at: new Date().toISOString(),
-    }))
-    const loadedOrgs = readOrganizations(fallbackOrgs)
-    setOrgNames(loadedOrgs.map((o) => o.name))
-    setWorkflowSettings(readASWorkflowSettings())
-    setVtOxygenStock(getVTOxygenSensorStockRollup())
-    setStockDropdownConfig(readDropdownConfig())
-  }, [])
+      if (useDb) {
+        const [dbDispatches, dbRepair, dbParts, dbClaims, dbSeReq] = await Promise.all([
+          readDbBlob<StockDispatch[]>(DB_KEYS.stockDispatches),
+          readDbBlob<RepairToCalRequest[]>(DB_KEYS.repairToCalRequests),
+          readDbBlob<ASPartsRequest[]>(DB_KEYS.partsRequests),
+          readDbBlob<ASCommissioningClaimCase[]>(DB_KEYS.commissioningClaimCases),
+          readDbBlob<SERequest[]>(DB_KEYS.seIncomingRequests),
+        ])
+        if (Array.isArray(dbDispatches) && dbDispatches.length > 0) {
+          setStockDispatches(dbDispatches)
+          writeStockDispatches(dbDispatches)
+        } else {
+          void writeDbBlob(DB_KEYS.stockDispatches, loadedDispatches)
+          setStockDispatches(loadedDispatches)
+        }
+        if (Array.isArray(dbRepair) && dbRepair.length > 0) {
+          loadedRepairToCal = dbRepair
+          writeRepairToCalRequests(dbRepair)
+        } else {
+          void writeDbBlob(DB_KEYS.repairToCalRequests, loadedRepairToCal)
+        }
+        if (Array.isArray(dbParts) && dbParts.length > 0) {
+          loadedPartsReq = dbParts
+          writePartsRequests(dbParts)
+        } else {
+          void writeDbBlob(DB_KEYS.partsRequests, loadedPartsReq)
+        }
+        if (Array.isArray(dbClaims) && dbClaims.length > 0) {
+          loadedClaimCases = dbClaims
+          writeCommissioningClaimCases(dbClaims)
+        } else {
+          void writeDbBlob(DB_KEYS.commissioningClaimCases, loadedClaimCases)
+        }
+        if (Array.isArray(dbSeReq) && dbSeReq.length > 0) {
+          loadedSEReq = dbSeReq
+          writeIncomingSERequests(dbSeReq)
+        } else {
+          void writeDbBlob(DB_KEYS.seIncomingRequests, loadedSEReq)
+        }
+      } else {
+        setStockDispatches(loadedDispatches)
+      }
+      setJobs(loadedJobs)
+      setRepairToCalRequests(loadedRepairToCal)
+      setPartsRequests(loadedPartsReq)
+      setCommissioningClaimCases(loadedClaimCases)
+      setSERequests(loadedSEReq)
+      setSelected(loadedJobs[0] ?? null)
+      setHydrated(true)
+
+      const fallbackOrgs: ASOrganization[] = MOCK_ORGS.map((n, idx) => ({
+        id: `seed-${idx}`,
+        name: n,
+        org_type: "New",
+        org_format: "",
+        province: "",
+        region: "",
+        health_district: 0,
+        one_qa: false,
+        contacts: [],
+        created_at: new Date().toISOString(),
+      }))
+      const loadedOrgs = readOrganizations(fallbackOrgs)
+      setOrgNames(loadedOrgs.map((o) => o.name))
+      setWorkflowSettings(readASWorkflowSettings())
+      setVtOxygenStock(getVTOxygenSensorStockRollup())
+      setStockDropdownConfig(readDropdownConfig())
+    }
+    void bootstrap()
+  }, [useDb])
 
   useEffect(() => {
     if (!hydrated) return
     writeJobs(jobs)
-  }, [jobs, hydrated])
+    if (useDb) {
+      void fetch("/api/as/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobs }),
+      })
+    }
+  }, [jobs, hydrated, useDb])
 
   useEffect(() => {
     if (!hydrated) return
     writeStockDispatches(stockDispatches)
+    if (useDb) void writeDbBlob(DB_KEYS.stockDispatches, stockDispatches)
   }, [stockDispatches, hydrated])
 
   useEffect(() => {
     if (!hydrated) return
     writeCommissioningClaimCases(commissioningClaimCases)
+    if (useDb) void writeDbBlob(DB_KEYS.commissioningClaimCases, commissioningClaimCases)
   }, [commissioningClaimCases, hydrated])
+
+  useEffect(() => {
+    if (!hydrated || !useDb) return
+    void writeDbBlob(DB_KEYS.repairToCalRequests, repairToCalRequests)
+  }, [repairToCalRequests, hydrated, useDb])
+
+  useEffect(() => {
+    if (!hydrated || !useDb) return
+    void writeDbBlob(DB_KEYS.partsRequests, partsRequests)
+  }, [partsRequests, hydrated, useDb])
+
+  useEffect(() => {
+    if (!hydrated || !useDb) return
+    void writeDbBlob(DB_KEYS.seIncomingRequests, seRequests)
+  }, [seRequests, hydrated, useDb])
 
   useEffect(() => {
     if (!hydrated) return

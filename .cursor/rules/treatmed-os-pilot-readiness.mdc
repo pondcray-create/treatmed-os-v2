@@ -1,0 +1,29 @@
+---
+description: Enforce pilot and go-live readiness gates
+alwaysApply: true
+---
+
+# TreatMed OS — Pilot Readiness Gate (1 month)
+
+ก่อนส่งมอบงานที่แตะ persistence/workflow ให้ถือกฎนี้เป็นข้อบังคับ
+
+## Required delivery format (ทุกครั้ง)
+- ตอบผู้ใช้เป็น 4 ส่วนเสมอ: **ทำแล้ว**, **เหลือ**, **ความเสี่ยง**, **สิ่งที่ผู้ใช้ต้องทำ**
+- จัดลำดับงานคงค้างจาก Priority สูงไปต่ำ
+- ระบุสถานะแต่ละข้อ: `done` | `in_progress` | `blocked`
+
+## Production completeness checklist (ห้ามข้าม)
+- Data loop ครบ: model -> API/sync -> UI create/edit/list/detail -> persistence
+- Workflow loop ครบ: SE -> AS, Stock -> AS, Repair -> Calibration (ถ้าแตะ flow)
+- Migration-safe: มี fallback/seed ที่ไม่ทำข้อมูลหาย และบอกผลกระทบข้อมูลเก่า
+- Validation pass: lint/type/check จุดที่แตะ
+- Rollout gate: มี feature flag หรือ switch plan สำหรับเปิด/ปิดการใช้งาน
+
+## 1-month pilot rule
+- เมื่อผู้ใช้ขอ pilot ให้เสนอแผน 4 สัปดาห์ (Week 1-4) พร้อมเกณฑ์ผ่าน/ไม่ผ่าน
+- ต้องมีรายการ telemetry/incident ที่ต้องเก็บระหว่าง pilot
+- ต้องมี exit criteria ชัดเจนก่อน go-live จริง
+
+## Never-done criteria
+- ห้ามบอกว่าเสร็จ หากยังไม่ระบุข้อคงค้างและสิ่งที่ผู้ใช้ต้องทำ
+- ห้ามปิดงานถ้ายังมีจุด `blocked` ที่ไม่อธิบายทางปลดบล็อก
