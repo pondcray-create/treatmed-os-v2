@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:stock-hydration-guard": "node scripts/tests/stock-hydration-guard.test.cjs"
+    "test:stock-hydration-guard": "node scripts/tests/stock-hydration-guard.test.cjs",
+    "migrate:as-one-time": "node scripts/as-one-time-migrate-to-db.cjs",
+    "clean:pilot-data": "node scripts/clean-pilot-data.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -5,27 +5,21 @@ import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatCurrency } from "@/lib/utils"
-import { AS_STORE_KEYS, readSEDeals, readStockItems, type ASStockSnapshotItem, type SEDeal } from "@/lib/mock/as-store"
+import {
+  AS_STORE_KEYS,
+  readJobs,
+  readOrganizations,
+  readSEDeals,
+  readStockItems,
+  type ASOrganization,
+  type ASServiceJob,
+  type ASStockSnapshotItem,
+  type SEDeal,
+} from "@/lib/mock/as-store"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line
 } from "recharts"
-
-const MONTHLY_SALES = [
-  { month: "ต.ค.", value: 18500000 },
-  { month: "พ.ย.", value: 21000000 },
-  { month: "ธ.ค.", value: 28000000 },
-  { month: "ม.ค.", value: 19000000 },
-  { month: "ก.พ.", value: 23500000 },
-  { month: "มี.ค.", value: 12000000 },
-]
-
-const RECENT_SR = [
-  { ticket_no: "SR-2024-001", customer: "โรงพยาบาลกรุงเทพ", equipment: "MRI 3T", status: "in_progress", priority: "urgent" },
-  { ticket_no: "SR-2024-002", customer: "โรงพยาบาลรามาธิบดี", equipment: "CT Scan", status: "pending", priority: "medium" },
-  { ticket_no: "SR-2024-004", customer: "โรงพยาบาลสมิติเวช", equipment: "X-Ray", status: "pending", priority: "high" },
-  { ticket_no: "SR-2024-005", customer: "โรงพยาบาลมหาราชนครเชียงใหม่", equipment: "Ventilator", status: "in_progress", priority: "urgent" },
-]
 
 const STAGE_COLORS: Record<string, string> = {
   lead: "bg-gray-100 text-gray-700",
@@ -43,22 +37,32 @@ const PRIORITY_COLORS: Record<string, string> = {
 }
 
 export default function DashboardPage() {
+  const [orgs, setOrgs] = useState<ASOrganization[]>([])
+  const [jobs, setJobs] = useState<ASServiceJob[]>([])
   const [stockItems, setStockItems] = useState<ASStockSnapshotItem[]>([])
   const [seDeals, setSEDeals] = useState<SEDeal[]>([])
 
   useEffect(() => {
+    const syncOrgs = () => setOrgs(readOrganizations([]))
+    const syncJobs = () => setJobs(readJobs([]))
     const syncStock = () => setStockItems(readStockItems([]))
     const syncDeals = () => setSEDeals(readSEDeals([]))
     const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === AS_STORE_KEYS.orgs) syncOrgs()
+      if (!ev.key || ev.key === AS_STORE_KEYS.jobs || ev.key === AS_STORE_KEYS.jobsVersion) syncJobs()
       if (!ev.key || ev.key === AS_STORE_KEYS.stockItems) syncStock()
       if (!ev.key || ev.key === AS_STORE_KEYS.seDeals) syncDeals()
     }
     const onStoreUpdated = (ev: Event) => {
       const key = (ev as CustomEvent<{ key?: string }>).detail?.key
       if (!key) return
+      if (key === AS_STORE_KEYS.orgs) syncOrgs()
+      if (key === AS_STORE_KEYS.jobs || key === AS_STORE_KEYS.jobsVersion) syncJobs()
       if (key === AS_STORE_KEYS.stockItems) syncStock()
       if (key === AS_STORE_KEYS.seDeals) syncDeals()
     }
+    syncOrgs()
+    syncJobs()
     syncStock()
     syncDeals()
     window.addEventListener("storage", onStorage)
@@ -68,6 +72,47 @@ export default function DashboardPage() {
       window.removeEventListener("as-store-updated", onStoreUpdated)
     }
   }, [])
+
+  const monthlySales = useMemo(() => {
+    const won = seDeals.filter((d) => String(d.stage).toLowerCase() === "won")
+    const monthMap = new Map<string, number>()
+    for (const d of won) {
+      const ymd = d.expected_close_date || ""
+      const m = ymd.slice(5, 7)
+      if (!m) continue
+      const key = `${m}`
+      monthMap.set(key, (monthMap.get(key) || 0) + (Number(d.value) || 0))
+    }
+    return Array.from(monthMap.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, value]) => ({ month, value }))
+  }, [seDeals])
+
+  const recentServiceRequests = useMemo(() => {
+    return [...jobs]
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      .slice(0, 6)
+      .map((j) => ({
+        ticket_no: j.job_no,
+        customer: j.customer_org || "-",
+        equipment: j.model || j.serial_number || "-",
+        status: j.status,
+        priority: j.priority || "low",
+      }))
+  }, [jobs])
+
+  const pendingJobsCount = useMemo(
+    () => jobs.filter((j) => j.status !== "ปิดงาน" && j.status !== "ยกเลิก").length,
+    [jobs],
+  )
+  const urgentJobsCount = useMemo(
+    () => jobs.filter((j) => j.priority === "urgent" && j.status !== "ปิดงาน" && j.status !== "ยกเลิก").length,
+    [jobs],
+  )
+  const lowStockCount = useMemo(
+    () => stockItems.filter((i) => i.status === "in_stock" && i.qty < 3).length,
+    [stockItems],
+  )
 
   const activeSEDeals = useMemo(
     () => seDeals.filter((d) => d.stage !== "won" && d.stage !== "lost"),
@@ -110,7 +155,7 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground">ลูกค้าทั้งหมด</p>
               <div className="p-2 bg-sky-100 rounded-lg"><Users className="h-4 w-4 text-sky-600" /></div>
             </div>
-            <p className="text-3xl font-bold text-sky-600">5</p>
+            <p className="text-3xl font-bold text-sky-600">{orgs.length}</p>
           </CardContent>
         </Card>
 
@@ -120,9 +165,9 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground">งานซ่อมค้างอยู่</p>
               <div className="p-2 bg-amber-100 rounded-lg"><Wrench className="h-4 w-4 text-amber-600" /></div>
             </div>
-            <p className="text-3xl font-bold text-amber-600">3</p>
+            <p className="text-3xl font-bold text-amber-600">{pendingJobsCount}</p>
             <p className="text-xs text-destructive mt-0.5 flex items-center gap-1">
-              <AlertTriangle className="h-3 w-3" /> 2 รายเร่งด่วน
+              <AlertTriangle className="h-3 w-3" /> {urgentJobsCount} รายเร่งด่วน
             </p>
           </CardContent>
         </Card>
@@ -144,7 +189,7 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground">สต็อกใกล้หมด</p>
               <div className="p-2 bg-red-100 rounded-lg"><Package className="h-4 w-4 text-red-600" /></div>
             </div>
-            <p className="text-3xl font-bold text-red-600">2</p>
+            <p className="text-3xl font-bold text-red-600">{lowStockCount}</p>
           </CardContent>
         </Card>
       </div>
@@ -158,15 +203,19 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={MONTHLY_SALES} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                <YAxis tickFormatter={v => `${(v / 1000000).toFixed(0)}M`} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                <Bar dataKey="value" name="ยอดขาย" fill="#6366f1" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {monthlySales.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">ยังไม่มีข้อมูลยอดขาย Won ตามเดือน</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={monthlySales} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                  <YAxis tickFormatter={v => `${(v / 1000000).toFixed(0)}M`} tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                  <Bar dataKey="value" name="ยอดขาย" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -194,7 +243,9 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {RECENT_SR.map(r => (
+            {recentServiceRequests.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">ยังไม่มีงานซ่อมล่าสุด</p>
+            ) : recentServiceRequests.map(r => (
               <div key={r.ticket_no} className="flex items-start justify-between p-3 rounded-lg bg-muted/30">
                 <div>
                   <div className="flex items-center gap-2">
@@ -204,8 +255,8 @@ export default function DashboardPage() {
                   <p className="font-medium text-sm mt-0.5">{r.customer}</p>
                   <p className="text-xs text-muted-foreground">{r.equipment}</p>
                 </div>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium ${r.status === "in_progress" ? "bg-blue-100 text-blue-700" : "bg-yellow-100 text-yellow-700"}`}>
-                  {r.status === "in_progress" ? "กำลังซ่อม" : "รอดำเนินการ"}
+                <span className={`text-xs px-2 py-1 rounded-full font-medium ${r.status === "กำลังซ่อม" ? "bg-blue-100 text-blue-700" : "bg-yellow-100 text-yellow-700"}`}>
+                  {r.status === "กำลังซ่อม" ? "กำลังซ่อม" : "รอดำเนินการ"}
                 </span>
               </div>
             ))}

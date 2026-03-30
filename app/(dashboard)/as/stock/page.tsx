@@ -823,9 +823,8 @@ const MOCK_BOOKINGS: Booking[] = [
   { id:"b1", item_id:"4", item_name:"ProSim 8 + SPOT Module", serial_number:"PS8-2024-NEW-001", sales_name:"คุณสมหมาย", customer_name:"โรงพยาบาลรามาธิบดี", booked_date:"2024-03-10", note:"รอลูกค้า approve PO" },
 ]
 
-/** ค่าเริ่มต้น MOCK เมื่อ localStorage ว่าง — ใช้เฉพาะ dev หรือเมื่อตั้ง NEXT_PUBLIC_STOCK_DEV_SEED=true */
-const USE_STOCK_DEV_SEED =
-  process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_STOCK_DEV_SEED === "true"
+/** Production strict mode: do not auto-seed stock data from mock constants. */
+const USE_STOCK_DEV_SEED = false
 
 const SALES_STAFF = ["คุณสมหมาย", "คุณวิภาพร", "คุณธนากร", "คุณพรรณิภา"]
 

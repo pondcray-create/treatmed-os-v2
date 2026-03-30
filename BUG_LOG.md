@@ -44,3 +44,33 @@ Rule: every production-impact bug must be recorded with root cause and preventio
 2. Navigate away and return.
 3. Refresh page.
 4. Confirm item still exists.
+
+## BUG-2026-03-30-002: DB write fails silently during pilot
+
+- **Status:** Fixed
+- **Severity:** High
+- **Area:** `AS API` (`app/api/as/state/route.ts`, `app/api/as/organizations/route.ts`)
+
+### Symptom
+- UI can still show data (local fallback), but Neon SQL shows no new rows.
+- After refresh, some pages look empty or stale when DB read/write is not healthy.
+
+### Forensic Root Cause
+- Runtime errors from DB write path were swallowed by client-side best-effort fallback.
+- API routes returned generic 500 with empty body, making incident diagnosis slow.
+- Neon schema had `updatedAt` not-defaulted rows from prior sync state, causing create/upsert failures for new records.
+
+### Fix
+- Added explicit try/catch JSON error responses in AS API routes:
+  - `/api/as/state`
+  - `/api/as/organizations`
+- Backfilled and set DB defaults for `updatedAt` (`DEFAULT now()`) on pilot tables.
+- Added one-time migration script and pilot daily checklist runbook.
+
+### Anti-pattern (Do not repeat)
+- "Silent fallback success" in UI without observability on DB write failures.
+
+### Verification
+1. POST to `/api/as/state` and `/api/as/organizations` returns `ok: true`.
+2. Add customer in UI and confirm row appears in `as_organizations`.
+3. Confirm `app_state_blobs.updatedAt` moves after Stock/Service actions.

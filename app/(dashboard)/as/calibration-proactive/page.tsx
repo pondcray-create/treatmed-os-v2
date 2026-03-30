@@ -54,6 +54,7 @@ const SEED_ASSETS: ASProactiveCalibrationAsset[] = [
 ]
 
 export default function CalibrationProactivePage() {
+  const useDevSeed = false
   const [assets, setAssets] = useState<ASProactiveCalibrationAsset[]>([])
   const [jobs, setJobs] = useState<ASServiceJob[]>([])
   const [search, setSearch] = useState("")
@@ -75,7 +76,7 @@ export default function CalibrationProactivePage() {
 
   useEffect(() => {
     const sync = () => {
-      setAssets(readProactiveCalibrationAssets(SEED_ASSETS))
+      setAssets(readProactiveCalibrationAssets(useDevSeed ? SEED_ASSETS : []))
       setProductCatalog(readProductCatalog())
       setStockDropdownConfig(readDropdownConfig())
     }
@@ -86,7 +87,7 @@ export default function CalibrationProactivePage() {
       window.removeEventListener("storage", sync)
       window.removeEventListener("as-store-updated", sync)
     }
-  }, [])
+  }, [useDevSeed])
 
   useEffect(() => {
     const syncJobs = () => setJobs(readJobs([]))

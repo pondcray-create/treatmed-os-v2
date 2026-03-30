@@ -1091,7 +1091,7 @@ function ServiceRequestPageContent() {
   const fsm = useJobStateMachine(actorRole)
   const searchParams = useSearchParams()
   const [jobs, setJobs] = useState<ServiceJob[]>([])
-  const [selected, setSelected] = useState<ServiceJob | null>(MOCK_JOBS[0])
+  const [selected, setSelected] = useState<ServiceJob | null>(null)
   const [search, setSearch] = useState("")
   const [filterType, setFilterType] = useState<"all"|JobType>("all")
   const [filterStatus, setFilterStatus] = useState("ทั้งหมด")
@@ -1105,7 +1105,7 @@ function ServiceRequestPageContent() {
   // Calibration requests coming from Repair
   const [repairToCalRequests, setRepairToCalRequests] = useState<RepairToCalRequest[]>([])
   const [hydrated, setHydrated] = useState(false)
-  const [orgNames, setOrgNames] = useState<string[]>(MOCK_ORGS)
+  const [orgNames, setOrgNames] = useState<string[]>([])
   const [workflowSettings, setWorkflowSettings] = useState(readASWorkflowSettings())
   const [cancelDialogJob, setCancelDialogJob] = useState<ServiceJob | null>(null)
   const [cancelReason, setCancelReason] = useState("")
@@ -1132,6 +1132,7 @@ function ServiceRequestPageContent() {
   const [transitionError, setTransitionError] = useState<string>("")
   const [vtOxygenStock, setVtOxygenStock] = useState(() => getVTOxygenSensorStockRollup())
   const [stockDropdownConfig, setStockDropdownConfig] = useState(readDropdownConfig())
+  const useServiceDevSeed = false
   // Pilot safety: always try DB first; fallback to local when API/DB is unavailable.
   const useDb = true
   const DB_KEYS = {
@@ -1167,7 +1168,7 @@ function ServiceRequestPageContent() {
 
   useEffect(() => {
     const bootstrap = async () => {
-      let loadedJobs = readJobs(MOCK_JOBS)
+      let loadedJobs = readJobs(useServiceDevSeed ? MOCK_JOBS : [])
       if (useDb) {
         try {
           const res = await fetch("/api/as/jobs")
@@ -1190,11 +1191,11 @@ function ServiceRequestPageContent() {
           // keep local fallback
         }
       }
-      const loadedDispatches = readStockDispatches(MOCK_STOCK_DISPATCHES)
+      const loadedDispatches = readStockDispatches(useServiceDevSeed ? MOCK_STOCK_DISPATCHES : [])
       let loadedRepairToCal = readRepairToCalRequests([])
       let loadedPartsReq = readPartsRequests([])
       let loadedClaimCases = readCommissioningClaimCases([])
-      let loadedSEReq = readIncomingSERequests(MOCK_SE_REQUESTS)
+      let loadedSEReq = readIncomingSERequests(useServiceDevSeed ? MOCK_SE_REQUESTS : [])
 
       if (useDb) {
         const [dbDispatches, dbRepair, dbParts, dbClaims, dbSeReq] = await Promise.all([
@@ -1246,7 +1247,7 @@ function ServiceRequestPageContent() {
       setSelected(loadedJobs[0] ?? null)
       setHydrated(true)
 
-      const fallbackOrgs: ASOrganization[] = MOCK_ORGS.map((n, idx) => ({
+      const fallbackOrgs: ASOrganization[] = (useServiceDevSeed ? MOCK_ORGS : []).map((n, idx) => ({
         id: `seed-${idx}`,
         name: n,
         org_type: "New",
@@ -1265,7 +1266,7 @@ function ServiceRequestPageContent() {
       setStockDropdownConfig(readDropdownConfig())
     }
     void bootstrap()
-  }, [useDb])
+  }, [useDb, useServiceDevSeed])
 
   useEffect(() => {
     if (!hydrated) return
@@ -1314,7 +1315,7 @@ function ServiceRequestPageContent() {
       setRepairToCalRequests(readRepairToCalRequests([]))
       setPartsRequests(readPartsRequests([]))
       setCommissioningClaimCases(readCommissioningClaimCases([]))
-      setSERequests(readIncomingSERequests(MOCK_SE_REQUESTS))
+      setSERequests(readIncomingSERequests(useServiceDevSeed ? MOCK_SE_REQUESTS : []))
       setWorkflowSettings(readASWorkflowSettings())
       setEquipmentHistory(readEquipmentHistory([]))
       setVtOxygenStock(getVTOxygenSensorStockRollup())

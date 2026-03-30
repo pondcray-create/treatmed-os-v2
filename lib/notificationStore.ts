@@ -9,8 +9,8 @@ export interface NotificationCounts {
 const KEY = "treatmed_notif_v2"
 
 const DEFAULTS: NotificationCounts = {
-  serviceRequestPending: 2,
-  inspectionPending: 1,
+  serviceRequestPending: 0,
+  inspectionPending: 0,
 }
 
 export function getNotificationCounts(): NotificationCounts {

@@ -10,7 +10,13 @@ import { ServiceStatusBadge, PriorityBadge } from "@/components/ui/status-badge"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatDate } from "@/lib/utils"
-import { AS_STORE_KEYS, readCommissioningClaimCases, type ASCommissioningClaimCase } from "@/lib/mock/as-store"
+import {
+  AS_STORE_KEYS,
+  readCommissioningClaimCases,
+  readJobs,
+  type ASCommissioningClaimCase,
+  type ASServiceJob,
+} from "@/lib/mock/as-store"
 
 interface ServiceRequest {
   id: string
@@ -26,13 +32,17 @@ interface ServiceRequest {
   updated_at: string
 }
 
-const MOCK_DATA: ServiceRequest[] = [
-  { id: "1", ticket_no: "SR-2024-001", customer_name: "โรงพยาบาลกรุงเทพ", equipment_name: "เครื่อง MRI 3T", serial_no: "MRI-2021-0012", issue_description: "เครื่องแสดง Error E-045 และหยุดทำงาน", priority: "urgent", status: "in_progress", assigned_to: "ช่างสมศักดิ์", created_at: "2024-03-15", updated_at: "2024-03-16" },
-  { id: "2", ticket_no: "SR-2024-002", customer_name: "โรงพยาบาลรามาธิบดี", equipment_name: "เครื่อง CT Scan", serial_no: "CT-2020-0034", issue_description: "ภาพไม่คมชัด ต้องการสอบเทียบ", priority: "medium", status: "pending", assigned_to: "", created_at: "2024-03-18", updated_at: "2024-03-18" },
-  { id: "3", ticket_no: "SR-2024-003", customer_name: "โรงพยาบาลศิริราช", equipment_name: "เครื่อง Ultrasound", serial_no: "US-2022-0087", issue_description: "หัวตรวจเสียหาย", priority: "high", status: "completed", assigned_to: "ช่างวีระ", created_at: "2024-03-10", updated_at: "2024-03-12" },
-  { id: "4", ticket_no: "SR-2024-004", customer_name: "โรงพยาบาลสมิติเวช", equipment_name: "เครื่อง X-Ray", serial_no: "XR-2019-0055", issue_description: "ท่อ X-Ray หมดอายุ", priority: "high", status: "pending", assigned_to: "", created_at: "2024-03-20", updated_at: "2024-03-20" },
-  { id: "5", ticket_no: "SR-2024-005", customer_name: "โรงพยาบาลมหาราชนครเชียงใหม่", equipment_name: "Ventilator ICU", serial_no: "VT-2023-0001", issue_description: "เสียงดังผิดปกติ", priority: "urgent", status: "in_progress", assigned_to: "ช่างประสิทธิ์", created_at: "2024-03-19", updated_at: "2024-03-19" },
-]
+function mapJobStatusToMonitor(status: ASServiceJob["status"]): ServiceRequest["status"] {
+  if (status === "ปิดงาน") return "completed"
+  if (status === "ยกเลิก") return "cancelled"
+  if (["กำลังประเมิน", "ในคิว", "กำลังซ่อม", "รออะไหล่", "QC", "รอส่งคืน"].includes(status)) return "in_progress"
+  return "pending"
+}
+
+function mapJobPriorityToMonitor(priority: ASServiceJob["priority"]): ServiceRequest["priority"] {
+  if (priority === "normal") return "low"
+  return priority
+}
 
 const STATUS_COLUMNS = [
   { key: "pending" as const, label: "รอดำเนินการ", color: "bg-yellow-50 border-yellow-200" },
@@ -44,20 +54,29 @@ const STATUS_COLUMNS = [
 export default function ServiceMonitorPage() {
   const [search, setSearch] = useState("")
   const [filterTech, setFilterTech] = useState("all")
+  const [jobs, setJobs] = useState<ASServiceJob[]>([])
   const [claimCases, setClaimCases] = useState<ASCommissioningClaimCase[]>([])
 
   useEffect(() => {
-    const sync = () => setClaimCases(readCommissioningClaimCases([]))
+    const syncJobs = () => setJobs(readJobs([]))
+    const syncClaims = () => setClaimCases(readCommissioningClaimCases([]))
     const onStorage = (ev: StorageEvent) => {
-      if (ev.key && ev.key !== AS_STORE_KEYS.commissioningClaimCases) return
-      sync()
+      if (!ev.key) {
+        syncJobs()
+        syncClaims()
+        return
+      }
+      if (ev.key === AS_STORE_KEYS.jobs || ev.key === AS_STORE_KEYS.jobsVersion) syncJobs()
+      if (ev.key === AS_STORE_KEYS.commissioningClaimCases) syncClaims()
     }
     const onStoreUpdated = (ev: Event) => {
       const key = (ev as CustomEvent<{ key?: string }>).detail?.key
-      if (key && key !== AS_STORE_KEYS.commissioningClaimCases) return
-      sync()
+      if (!key) return
+      if (key === AS_STORE_KEYS.jobs || key === AS_STORE_KEYS.jobsVersion) syncJobs()
+      if (key === AS_STORE_KEYS.commissioningClaimCases) syncClaims()
     }
-    sync()
+    syncJobs()
+    syncClaims()
     window.addEventListener("storage", onStorage)
     window.addEventListener("as-store-updated", onStoreUpdated)
     return () => {
@@ -66,13 +85,31 @@ export default function ServiceMonitorPage() {
     }
   }, [])
 
-  const filtered = MOCK_DATA.filter(r => {
+  const monitorRows = useMemo<ServiceRequest[]>(
+    () =>
+      jobs.map((j) => ({
+        id: j.id,
+        ticket_no: j.job_no,
+        customer_name: j.customer_org || "-",
+        equipment_name: j.model || "-",
+        serial_no: j.serial_number || "-",
+        issue_description: j.symptom_reported || "-",
+        priority: mapJobPriorityToMonitor(j.priority),
+        status: mapJobStatusToMonitor(j.status),
+        assigned_to: j.technician || j.assigned_engineer || "",
+        created_at: j.created_at,
+        updated_at: j.stock_return_received_at || j.created_at,
+      })),
+    [jobs],
+  )
+
+  const filtered = monitorRows.filter(r => {
     const matchSearch = r.ticket_no.includes(search) || r.customer_name.includes(search) || r.equipment_name.includes(search)
     const matchTech = filterTech === "all" || r.assigned_to === filterTech
     return matchSearch && matchTech
   })
 
-  const technicians = [...new Set(MOCK_DATA.map(r => r.assigned_to).filter(Boolean))]
+  const technicians = [...new Set(monitorRows.map(r => r.assigned_to).filter(Boolean))]
   const today = new Date().toISOString().slice(0, 10)
   const diffDays = (fromISO?: string, toISO?: string) => {
     if (!fromISO || !toISO) return 0
