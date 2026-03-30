@@ -1132,7 +1132,8 @@ function ServiceRequestPageContent() {
   const [transitionError, setTransitionError] = useState<string>("")
   const [vtOxygenStock, setVtOxygenStock] = useState(() => getVTOxygenSensorStockRollup())
   const [stockDropdownConfig, setStockDropdownConfig] = useState(readDropdownConfig())
-  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+  // Pilot safety: always try DB first; fallback to local when API/DB is unavailable.
+  const useDb = true
   const DB_KEYS = {
     stockDispatches: "as:stock_dispatches",
     repairToCalRequests: "as:repair_to_cal_requests",

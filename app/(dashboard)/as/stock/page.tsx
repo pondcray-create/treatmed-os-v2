@@ -2090,7 +2090,8 @@ export default function StockPage() {
   const [claimFilterScope, setClaimFilterScope] = useState<"all" | "whole_unit" | "module" | "sensor">("all")
   const [claimSearchQuery, setClaimSearchQuery] = useState("")
   const [seOrderRequests, setSeOrderRequests] = useState<SEOrderRequest[]>(() => readSEOrderRequests([]))
-  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+  // Pilot safety: always try DB first; fallback to local when API/DB is unavailable.
+  const useDb = true
   const DB_KEYS = {
     stockItems: "as:stock_items",
     stockTransactions: "as:stock_transactions",

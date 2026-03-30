@@ -338,7 +338,8 @@ export default function CustomersPage() {
   const [serviceJobs, setServiceJobs] = useState<ASServiceJob[]>([])
   const [stockItems, setStockItems] = useState<StockCustomerEquipment[]>([])
 
-  const useDb = process.env.NEXT_PUBLIC_AS_DB_MODE === "db"
+  // Pilot safety: always try DB first; fallback to local when API/DB is unavailable.
+  const useDb = true
 
   const customerFacingOrgs = useMemo(
     () => orgs.filter((o) => !isInternalStockCustomerOrgName(o.name)),
