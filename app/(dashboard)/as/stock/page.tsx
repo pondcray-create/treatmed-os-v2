@@ -4093,7 +4093,12 @@ export default function StockPage() {
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   {["Item / SN","Brand","Category","Qty","Min","Days In Stock","Calibration","Status","Quick Action"].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                    <th
+                      key={h}
+                      className={`px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap ${
+                        h === "Quick Action" ? "min-w-[240px]" : ""
+                      }`}
+                    >
                       {h}
                     </th>
                   ))}
@@ -4164,7 +4169,7 @@ export default function StockPage() {
                               e.stopPropagation()
                               setActionMenuId((prev) => (prev === item.id ? null : item.id))
                             }}
-                            className="w-full min-w-[170px] inline-flex items-center justify-between px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                            className="w-full min-w-[220px] inline-flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
                           >
                             <span>Quick Action</span>
                             <MoreHorizontal className="h-3.5 w-3.5 text-gray-400" />
@@ -4172,33 +4177,33 @@ export default function StockPage() {
                           {actionMenuId === item.id && (
                             <div
                               onClick={(e) => e.stopPropagation()}
-                              className="absolute right-0 mt-1 w-56 min-w-[14rem] rounded-xl border border-gray-200 bg-white shadow-lg z-20 p-1.5 space-y-1 animate-in fade-in zoom-in-95 duration-150"
+                              className="absolute right-0 mt-1 w-72 min-w-[18rem] rounded-xl border border-gray-200 bg-white shadow-lg z-20 p-2 space-y-2 animate-in fade-in zoom-in-95 duration-150"
                             >
                               {(item.status === "in_stock" || item.status === "reserved" || item.status === "sold") && (
-                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "send_job") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-blue-700 hover:bg-blue-50">
+                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "send_job") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 hover:bg-blue-50">
                                   Send Job
                                 </button>
                               )}
                               {item.serial_number && (
-                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "update_calibration") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-teal-700 hover:bg-teal-50">
+                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "update_calibration") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-teal-700 hover:bg-teal-50">
                                   Update Calibration
                                 </button>
                               )}
                               {item.status !== "sold" && (
                                 <>
                               {item.status === "on_loan" ? (
-                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "return_loan") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-indigo-700 hover:bg-indigo-50">
+                                <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "return_loan") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-indigo-700 hover:bg-indigo-50">
                                   Return Loan
                                 </button>
                               ) : (item.status === "in_stock" || item.status === "reserved") ? (
                                 <>
                                   {isLoanDemoCategory(item) && (
-                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "loan") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-indigo-700 hover:bg-indigo-50">
+                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "loan") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-indigo-700 hover:bg-indigo-50">
                                       Loan (Demo)
                                     </button>
                                   )}
                                   {!isLoanDemoCategory(item) && item.loan_approval_status === "approved" && (
-                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "loan") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-indigo-700 hover:bg-indigo-50">
+                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "loan") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-indigo-700 hover:bg-indigo-50">
                                       Loan
                                     </button>
                                   )}
@@ -4207,16 +4212,16 @@ export default function StockPage() {
                                       <div className="px-2.5 py-1 text-[10px] font-semibold text-amber-800 bg-amber-50 rounded-lg border border-amber-100">
                                         Loan Approval Pending
                                       </div>
-                                      <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "approve_loan_request") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-800 hover:bg-emerald-50">
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "approve_loan_request") }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-emerald-800 hover:bg-emerald-50">
                                         Approve Loan
                                       </button>
-                                      <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "reject_loan_request") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-red-600 hover:bg-red-50">
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "reject_loan_request") }} className="w-full text-left px-3 py-2 rounded-lg text-sm text-red-600 hover:bg-red-50">
                                         Reject Request
                                       </button>
                                     </>
                                   )}
                                   {!isLoanDemoCategory(item) && !item.loan_approval_status && (
-                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "request_loan_approval") }} className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-amber-900 hover:bg-amber-50">
+                                    <button type="button" onClick={(e) => { e.stopPropagation(); handleQuickAction(item, "request_loan_approval") }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-amber-900 hover:bg-amber-50">
                                       Request Loan Approval
                                     </button>
                                   )}
@@ -4229,7 +4234,7 @@ export default function StockPage() {
                                     e.stopPropagation()
                                     handleQuickAction(item, "sell_stock")
                                   }}
-                                  className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                                  className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-slate-800 hover:bg-slate-100"
                                 >
                                   Mark as Sold
                                 </button>
@@ -4241,7 +4246,7 @@ export default function StockPage() {
                                     e.stopPropagation()
                                     handleQuickAction(item, "booking_item")
                                   }}
-                                  className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold text-orange-800 hover:bg-orange-50"
+                                  className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-orange-800 hover:bg-orange-50"
                                 >
                                   Create Booking
                                 </button>
