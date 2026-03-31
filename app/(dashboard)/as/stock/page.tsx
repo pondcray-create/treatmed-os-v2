@@ -2249,17 +2249,18 @@ export default function StockPage() {
         if (Array.isArray(dbItems) && dbItems.length > 0) {
           nextItems = dbItems
         } else {
-          void writeDbBlob(DB_KEYS.stockItems, nextItems)
+          // DB-first mode: when DB is empty, keep Stock empty instead of resurrecting stale local cache.
+          nextItems = []
         }
         if (Array.isArray(dbTx) && dbTx.length > 0) {
           nextTx = dbTx
         } else {
-          void writeDbBlob(DB_KEYS.stockTransactions, nextTx)
+          nextTx = []
         }
         if (Array.isArray(dbBookings) && dbBookings.length > 0) {
           nextBookings = dbBookings
         } else {
-          void writeDbBlob(DB_KEYS.stockBookings, nextBookings)
+          nextBookings = []
         }
       }
 
