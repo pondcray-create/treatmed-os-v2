@@ -29,6 +29,9 @@ import { useNotifications } from "@/hooks/useNotifications";
 import type { UserRole } from "@/types/database";
 import { canAccess } from "@/lib/auth/roles";
 
+const APP_VERSION_LABEL = "V2.0";
+const APP_PATCH_LABEL = "v2026.03.31-03";
+
 type NavItem = {
   label: string;
   href: string;
@@ -107,7 +110,8 @@ export function Sidebar() {
           </div>
           <div>
             <p className="font-semibold text-sm text-gray-900">TreatMed OS</p>
-            <p className="text-xs text-gray-400">V2.0</p>
+            <p className="text-xs text-gray-400">{APP_VERSION_LABEL}</p>
+            <p className="text-[10px] text-gray-300 leading-tight">{APP_PATCH_LABEL}</p>
           </div>
         </div>
       </div>

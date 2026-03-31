@@ -37,17 +37,16 @@ import { sortedOrgCustomerNames } from "@/lib/se/se-org-customers"
 type SEServiceRequest = SEServiceRequestStored
 
 const REQUEST_TYPE_LABELS = {
-  installation: "ติดตั้ง",
+  repair: "Repair",
+  calibration: "Calibrate",
   training: "อบรม",
-  maintenance: "บำรุงรักษา",
-  consultation: "ให้คำปรึกษา",
 }
 
 const srSchema = z.object({
   customer_name: z.string().min(1),
   deal_title: z.string().optional(),
   deal_id: z.string().optional(),
-  request_type: z.enum(["installation", "training", "maintenance", "consultation"]),
+  request_type: z.enum(["repair", "calibration", "training"]),
   description: z.string().min(1),
   status: z.enum(["pending", "scheduled", "completed", "cancelled"]),
   scheduled_date: z.string().optional(),
@@ -55,9 +54,25 @@ const srSchema = z.object({
 })
 
 type SRForm = z.infer<typeof srSchema>
+type SRRequestType = SRForm["request_type"]
 
 function seRefTag(id: string) {
   return `[SE_REQ:${id}]`
+}
+
+function normalizeRequestType(value?: string): SRRequestType {
+  if (value === "calibration") return "calibration"
+  if (value === "training") return "training"
+  // Legacy mapping for stored data before request type refactor.
+  if (value === "maintenance") return "repair"
+  if (value === "installation") return "repair"
+  if (value === "consultation") return "repair"
+  return "repair"
+}
+
+function requestTypeLabel(value?: string): string {
+  const normalized = normalizeRequestType(value)
+  return REQUEST_TYPE_LABELS[normalized]
 }
 
 export default function SEServiceRequestPage() {
@@ -74,7 +89,7 @@ export default function SEServiceRequestPage() {
 
   const { register, handleSubmit, setValue, reset, control } = useForm<SRForm>({
     resolver: zodResolver(srSchema),
-    defaultValues: { request_type: "consultation", status: "pending", deal_id: "" },
+    defaultValues: { request_type: "repair", status: "pending", deal_id: "" },
   })
 
   const watchCustomer = useWatch({ control, name: "customer_name" })
@@ -147,7 +162,7 @@ export default function SEServiceRequestPage() {
   function openAdd() {
     setEditTarget(null)
     reset({
-      request_type: "consultation",
+      request_type: "repair",
       status: "pending",
       owner: isAdmin ? "" : ownerName,
       deal_id: "",
@@ -161,7 +176,16 @@ export default function SEServiceRequestPage() {
 
   function openEdit(r: SEServiceRequest) {
     setEditTarget(r)
-    reset(r)
+    reset({
+      customer_name: r.customer_name,
+      deal_title: r.deal_title ?? "",
+      deal_id: r.deal_id ?? "",
+      request_type: normalizeRequestType(r.request_type),
+      description: r.description,
+      status: r.status,
+      scheduled_date: r.scheduled_date ?? "",
+      owner: r.owner,
+    })
     setDialogOpen(true)
   }
 
@@ -198,7 +222,7 @@ export default function SEServiceRequestPage() {
         customer_contact: owner,
         symptom: `${data.description}\n${seRefTag(requestId)}`,
         receive_channel: "พนักงาน",
-        job_type: "repair",
+        job_type: data.request_type === "calibration" ? "calibration" : "repair",
         routing: "in_country",
         dispatched_by: "SE",
         dispatched_at: new Date().toISOString(),
@@ -225,7 +249,7 @@ export default function SEServiceRequestPage() {
           deal_id: did,
           activity_type: actType,
           source: "se_service_request",
-          subject: `คำขอ${REQUEST_TYPE_LABELS[data.request_type]} — ${ref_no}`,
+          subject: `คำขอ${requestTypeLabel(data.request_type)} — ${ref_no}`,
           note: data.description.slice(0, 800),
           occurred_on: createdDate,
           actor_name: owner,
@@ -235,6 +259,10 @@ export default function SEServiceRequestPage() {
       toast({ title: "สร้าง Service Request สำเร็จ" })
     }
     setDialogOpen(false)
+  }
+
+  function onInvalidSubmit() {
+    toast({ title: "ส่ง SR ไม่สำเร็จ", description: "กรอกข้อมูลที่มี * ให้ครบก่อนส่ง", variant: "destructive" })
   }
 
   const statusVariant = (s: string) =>
@@ -301,7 +329,7 @@ export default function SEServiceRequestPage() {
                     <p className="font-medium text-sm">{r.customer_name}</p>
                     {r.deal_title && <p className="text-xs text-muted-foreground">{r.deal_title}</p>}
                   </TableCell>
-                  <TableCell><Badge variant="outline">{REQUEST_TYPE_LABELS[r.request_type]}</Badge></TableCell>
+                  <TableCell><Badge variant="outline">{requestTypeLabel(r.request_type)}</Badge></TableCell>
                   <TableCell className="text-sm max-w-[200px] truncate">{r.description}</TableCell>
                   <TableCell className="text-sm">{r.scheduled_date ? formatDate(r.scheduled_date) : "-"}</TableCell>
                   <TableCell>{r.owner}</TableCell>
@@ -335,7 +363,7 @@ export default function SEServiceRequestPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>{editTarget ? `แก้ไข ${editTarget.ref_no}` : "สร้าง Service Request"}</DialogTitle></DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)}>
+          <form onSubmit={handleSubmit(onSubmit, onInvalidSubmit)}>
             <div className="grid grid-cols-2 gap-4 py-4">
               <div className="space-y-1.5">
                 <Label>ลูกค้า *</Label>
@@ -387,13 +415,12 @@ export default function SEServiceRequestPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>ประเภทคำขอ</Label>
-                <Select onValueChange={v => setValue("request_type", v as any)} defaultValue={editTarget?.request_type ?? "consultation"}>
+                <Select onValueChange={v => setValue("request_type", v as any)} defaultValue={editTarget?.request_type ?? "repair"}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="installation">ติดตั้ง</SelectItem>
+                    <SelectItem value="repair">Repair</SelectItem>
+                    <SelectItem value="calibration">Calibrate</SelectItem>
                     <SelectItem value="training">อบรม</SelectItem>
-                    <SelectItem value="maintenance">บำรุงรักษา</SelectItem>
-                    <SelectItem value="consultation">ให้คำปรึกษา</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

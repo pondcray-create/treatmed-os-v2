@@ -30,7 +30,7 @@ export async function GET() {
 
   const jobs: ASServiceJob[] = rows.map((r) => {
     const raw = (r.rawPayload || {}) as Partial<ASServiceJob>
-    return {
+    const normalized: ASServiceJob = {
       ...raw,
       id: r.id,
       job_no: raw.job_no || r.jobNo,
@@ -44,84 +44,95 @@ export async function GET() {
       source: raw.source || sourceFromDb(r.source),
       created_at: raw.created_at || r.createdAt.toISOString(),
     } as ASServiceJob
+    // Guardrail: once Stock has confirmed receive, never surface as pending return again.
+    if (normalized.stock_return_received_at) {
+      normalized.stock_return_pending = false
+    }
+    return normalized
   })
   return NextResponse.json(jobs)
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as { jobs?: ASServiceJob[] }
+  const body = (await req.json()) as { jobs?: ASServiceJob[]; full_replace?: boolean }
   const jobs = body?.jobs
+  const fullReplace = body?.full_replace === true
   if (!Array.isArray(jobs)) {
     return NextResponse.json({ ok: false, error: "Missing jobs[]" }, { status: 400 })
   }
 
   await prisma.$transaction(async (tx) => {
-    const keepIds = jobs.map((j) => j.id)
-    await tx.serviceJob.deleteMany({
-      where: keepIds.length > 0 ? { id: { notIn: keepIds } } : undefined,
-    })
+    if (fullReplace) {
+      const keepIds = jobs.map((j) => j.id)
+      await tx.serviceJob.deleteMany({
+        where: keepIds.length > 0 ? { id: { notIn: keepIds } } : undefined,
+      })
+    }
 
     for (const j of jobs) {
+      const normalizedJob: ASServiceJob = j.stock_return_received_at
+        ? { ...j, stock_return_pending: false }
+        : j
       await tx.serviceJob.upsert({
-        where: { id: j.id },
+        where: { id: normalizedJob.id },
         update: {
-          jobNo: j.job_no,
-          jobType: j.job_type,
-          status: j.status,
-          source: sourceToDb(j.source),
-          sourceDispatchId: j.source_dispatch_id || null,
-          customerOrgNameSnapshot: j.customer_org || "",
-          customerName: j.customer_name || null,
-          manufacturer: j.manufacturer || null,
-          model: j.model || null,
-          serialNumber: j.serial_number || null,
-          routing: j.routing || null,
-          rmaCode: j.rma_code || null,
-          symptom: j.symptom_reported || null,
-          symptomActual: j.symptom_actual || null,
-          fixMethod: j.fix_method || null,
-          receivedDate: toIsoDate(j.received_date) || null,
-          calibrationDate: toIsoDate(j.calibration_date) || null,
-          dueDate: toIsoDate(j.due_date) || null,
-          trackingIn: j.tracking_in || null,
-          trackingOut: j.tracking_out || null,
-          invoiceNo: j.invoice_no || null,
-          warrantyDays: j.warranty_days || null,
-          stockReturnReceivedAt: toIsoDate(j.stock_return_received_at) || null,
-          rawPayload: j as unknown as Prisma.InputJsonValue,
+          jobNo: normalizedJob.job_no,
+          jobType: normalizedJob.job_type,
+          status: normalizedJob.status,
+          source: sourceToDb(normalizedJob.source),
+          sourceDispatchId: normalizedJob.source_dispatch_id || null,
+          customerOrgNameSnapshot: normalizedJob.customer_org || "",
+          customerName: normalizedJob.customer_name || null,
+          manufacturer: normalizedJob.manufacturer || null,
+          model: normalizedJob.model || null,
+          serialNumber: normalizedJob.serial_number || null,
+          routing: normalizedJob.routing || null,
+          rmaCode: normalizedJob.rma_code || null,
+          symptom: normalizedJob.symptom_reported || null,
+          symptomActual: normalizedJob.symptom_actual || null,
+          fixMethod: normalizedJob.fix_method || null,
+          receivedDate: toIsoDate(normalizedJob.received_date) || null,
+          calibrationDate: toIsoDate(normalizedJob.calibration_date) || null,
+          dueDate: toIsoDate(normalizedJob.due_date) || null,
+          trackingIn: normalizedJob.tracking_in || null,
+          trackingOut: normalizedJob.tracking_out || null,
+          invoiceNo: normalizedJob.invoice_no || null,
+          warrantyDays: normalizedJob.warranty_days || null,
+          stockReturnReceivedAt: toIsoDate(normalizedJob.stock_return_received_at) || null,
+          rawPayload: normalizedJob as unknown as Prisma.InputJsonValue,
         },
         create: {
-          id: j.id,
-          jobNo: j.job_no,
-          jobType: j.job_type,
-          status: j.status,
-          source: sourceToDb(j.source),
-          sourceDispatchId: j.source_dispatch_id || null,
-          customerOrgNameSnapshot: j.customer_org || "",
-          customerName: j.customer_name || null,
-          manufacturer: j.manufacturer || null,
-          model: j.model || null,
-          serialNumber: j.serial_number || null,
-          routing: j.routing || null,
-          rmaCode: j.rma_code || null,
-          symptom: j.symptom_reported || null,
-          symptomActual: j.symptom_actual || null,
-          fixMethod: j.fix_method || null,
-          receivedDate: toIsoDate(j.received_date) || null,
-          calibrationDate: toIsoDate(j.calibration_date) || null,
-          dueDate: toIsoDate(j.due_date) || null,
-          trackingIn: j.tracking_in || null,
-          trackingOut: j.tracking_out || null,
-          invoiceNo: j.invoice_no || null,
-          warrantyDays: j.warranty_days || null,
-          stockReturnReceivedAt: toIsoDate(j.stock_return_received_at) || null,
-          createdAt: toIsoDate(j.created_at) || new Date(),
-          rawPayload: j as unknown as Prisma.InputJsonValue,
+          id: normalizedJob.id,
+          jobNo: normalizedJob.job_no,
+          jobType: normalizedJob.job_type,
+          status: normalizedJob.status,
+          source: sourceToDb(normalizedJob.source),
+          sourceDispatchId: normalizedJob.source_dispatch_id || null,
+          customerOrgNameSnapshot: normalizedJob.customer_org || "",
+          customerName: normalizedJob.customer_name || null,
+          manufacturer: normalizedJob.manufacturer || null,
+          model: normalizedJob.model || null,
+          serialNumber: normalizedJob.serial_number || null,
+          routing: normalizedJob.routing || null,
+          rmaCode: normalizedJob.rma_code || null,
+          symptom: normalizedJob.symptom_reported || null,
+          symptomActual: normalizedJob.symptom_actual || null,
+          fixMethod: normalizedJob.fix_method || null,
+          receivedDate: toIsoDate(normalizedJob.received_date) || null,
+          calibrationDate: toIsoDate(normalizedJob.calibration_date) || null,
+          dueDate: toIsoDate(normalizedJob.due_date) || null,
+          trackingIn: normalizedJob.tracking_in || null,
+          trackingOut: normalizedJob.tracking_out || null,
+          invoiceNo: normalizedJob.invoice_no || null,
+          warrantyDays: normalizedJob.warranty_days || null,
+          stockReturnReceivedAt: toIsoDate(normalizedJob.stock_return_received_at) || null,
+          createdAt: toIsoDate(normalizedJob.created_at) || new Date(),
+          rawPayload: normalizedJob as unknown as Prisma.InputJsonValue,
         },
       })
     }
   })
 
-  return NextResponse.json({ ok: true, count: jobs.length })
+  return NextResponse.json({ ok: true, count: jobs.length, full_replace: fullReplace })
 }
 

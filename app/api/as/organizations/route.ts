@@ -138,7 +138,11 @@ export async function POST(req: Request) {
       }
     })
 
-    return NextResponse.json({ ok: true })
+    const persisted = await prisma.organization.findMany({
+      include: { contacts: true },
+      orderBy: { createdAt: "desc" },
+    })
+    return NextResponse.json({ ok: true, orgs: persisted.map(toPayloadOrganization) })
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "Unknown error" },

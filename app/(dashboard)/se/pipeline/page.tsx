@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useWatch, useForm } from "react-hook-form"
-import { GitBranch, Plus } from "lucide-react"
+import { GitBranch, Plus, Pencil } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -101,6 +101,7 @@ export default function PipelinePage() {
   const { profile } = useAuth()
   const [deals, setDeals] = useState<Deal[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editDealId, setEditDealId] = useState<string | null>(null)
   const [seSettings, setSESettings] = useState<SESettings>(() => initialSESettingsForSSR())
   const [bookingRequests, setBookingRequests] = useState<StockBookingRequest[]>([])
   const [orgs, setOrgs] = useState<ASOrganization[]>([])
@@ -273,6 +274,32 @@ export default function PipelinePage() {
   const totalValue = visibleDeals.filter(d => d.stage !== "lost").reduce((sum, d) => sum + d.value * d.probability / 100, 0)
   const wonValue = visibleDeals.filter(d => d.stage === "won").reduce((sum, d) => sum + d.value, 0)
 
+  function openEditDeal(deal: Deal) {
+    setEditDealId(deal.id)
+    setCustomerMode("existing")
+    setExtraProductLines(deal.product_lines?.map((row) => ({
+      product_model: row.product_model,
+      manufacturer: row.manufacturer || "",
+    })) ?? [])
+    reset({
+      customer_name: deal.customer_name,
+      customer_name_new: "",
+      customer_segment: deal.customer_segment === "other" ? "other" : "public_hospital",
+      market_segment: deal.market_segment || "",
+      customer_name_english: deal.customer_name_english || "",
+      province: deal.province || "",
+      title: deal.title,
+      product_model: deal.product_model,
+      manufacturer: deal.manufacturer || "",
+      stage: deal.stage,
+      value: deal.value,
+      probability: deal.probability,
+      expected_close_date: deal.expected_close_date,
+      owner: deal.owner || currentOwnerName,
+    })
+    setDialogOpen(true)
+  }
+
   function onSubmit(data: DealForm) {
     const existingCustomer = data.customer_name?.trim() || ""
     const newCustomer = data.customer_name_new?.trim() || ""
@@ -335,9 +362,10 @@ export default function PipelinePage() {
 
     const selectedModel = modelOptions.find((m) => m.model === data.product_model)
     const createdAt = new Date().toISOString()
-    const newDeal: Deal = {
-      id: newId("deal"),
-      deal_no: `DEAL-${String(deals.length + 1).padStart(3, "0")}`,
+    const baseDeal = editDealId ? deals.find((d) => d.id === editDealId) : null
+    const nextDeal: Deal = {
+      id: baseDeal?.id || newId("deal"),
+      deal_no: baseDeal?.deal_no || `DEAL-${String(deals.length + 1).padStart(3, "0")}`,
       title: data.title,
       customer_name: customerName,
       product_model: data.product_model,
@@ -354,10 +382,18 @@ export default function PipelinePage() {
       province: provinceStr,
       region: regionStr,
       health_district: healthNum,
-      on_ebidding: false,
-      created_at: createdAt,
+      on_ebidding: baseDeal?.on_ebidding ?? false,
+      created_at: baseDeal?.created_at || createdAt,
+      admin_quote_no: baseDeal?.admin_quote_no,
+      next_followup_on: baseDeal?.next_followup_on,
+      declared_in_hand: baseDeal?.declared_in_hand,
+      below_stage_prob_note: baseDeal?.below_stage_prob_note,
+      lost_reason: isTerminalClosedDealStage(data.stage) ? baseDeal?.lost_reason : undefined,
+      lost_reason_note: isTerminalClosedDealStage(data.stage) ? baseDeal?.lost_reason_note : undefined,
     }
-    const nextDeals = [newDeal, ...deals]
+    const nextDeals = baseDeal
+      ? deals.map((d) => (d.id === baseDeal.id ? nextDeal : d))
+      : [nextDeal, ...deals]
     // Persist ดีลก่อน แล้วค่อยแตะ se_settings — ไม่งั้น as-store-updated จาก settings จะ sync ดีล
     // จาก localStorage ก่อน useEffect จะเขียน ทำให้ดีลที่เพิ่งสร้างหายไป
     writeSEDeals(nextDeals)
@@ -373,16 +409,20 @@ export default function PipelinePage() {
     setOrgs(mergedOrgs)
     const actor = currentOwnerName || profile?.full_name?.trim() || profile?.email?.trim() || "SE"
     appendSEDealActivity({
-      deal_id: newDeal.id,
+      deal_id: nextDeal.id,
       activity_type: "other",
       source: "manual",
-      subject: "สร้างดีล",
+      subject: baseDeal ? "แก้ไขดีล" : "สร้างดีล",
       note: additionalLines.length ? `สินค้า/เครื่อง ${1 + additionalLines.length} รายการใน 1 ดีล` : "",
       occurred_on: new Date().toISOString().slice(0, 10),
       actor_name: actor,
     })
-    toast({ title: "สร้างดีลสำเร็จ", description: `${newDeal.deal_no}: ${data.title}` })
+    toast({
+      title: baseDeal ? "อัปเดตดีลสำเร็จ" : "สร้างดีลสำเร็จ",
+      description: `${nextDeal.deal_no}: ${data.title}`,
+    })
     setDialogOpen(false)
+    setEditDealId(null)
     setCustomerMode("existing")
     reset({
       stage: stages[0] ?? "lead",
@@ -639,6 +679,7 @@ export default function PipelinePage() {
         action={{
           label: "เพิ่มดีล",
           onClick: () => {
+            setEditDealId(null)
             reset({
               stage: stages[0] ?? "lead",
               probability: suggestedProbabilityFromSettings(seSettings, stages[0] ?? "lead"),
@@ -701,7 +742,17 @@ export default function PipelinePage() {
                   return (
                   <Card key={d.id} className="shadow-sm hover:shadow-md transition-shadow">
                     <CardContent className="p-3 space-y-1.5">
-                      <p className="text-xs text-muted-foreground font-mono">{d.deal_no}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs text-muted-foreground font-mono">{d.deal_no}</p>
+                        <button
+                          type="button"
+                          onClick={() => openEditDeal(d)}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          แก้ไข
+                        </button>
+                      </div>
                       <p className="font-semibold text-sm leading-tight">{d.title}</p>
                       <p className="text-xs text-muted-foreground">{d.customer_name}</p>
                       {d.customer_name_english && (
@@ -830,7 +881,7 @@ export default function PipelinePage() {
       {/* Add Deal Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>เพิ่มดีลใหม่</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editDealId ? "แก้ไขดีล" : "เพิ่มดีลใหม่"}</DialogTitle></DialogHeader>
           <form onSubmit={handleSubmit(onSubmit)}>
             <div className="grid grid-cols-2 gap-4 py-4">
               <div className="col-span-2 space-y-1.5">
@@ -1146,7 +1197,7 @@ export default function PipelinePage() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
-              <Button type="submit">สร้างดีล</Button>
+              <Button type="submit">{editDealId ? "บันทึกการแก้ไข" : "สร้างดีล"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

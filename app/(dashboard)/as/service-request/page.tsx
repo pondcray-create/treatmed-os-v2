@@ -27,6 +27,7 @@ import {
   appendRepairToCalRequest,
   removeIncomingSERequest,
   removeRepairToCalRequest,
+  syncCalibrationBySerial,
   upsertOrganizationByName,
   writeJobs,
   writeJobsWithConcurrencyCheck,
@@ -1166,6 +1167,19 @@ function ServiceRequestPageContent() {
     }
   }
 
+  async function upsertJobsToDb(patchJobs: ServiceJob[]) {
+    if (!useDb || patchJobs.length === 0) return
+    try {
+      await fetch("/api/as/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobs: patchJobs }),
+      })
+    } catch {
+      // best-effort mirror during pilot
+    }
+  }
+
   useEffect(() => {
     const bootstrap = async () => {
       let loadedJobs = readJobs(useServiceDevSeed ? MOCK_JOBS : [])
@@ -1183,7 +1197,7 @@ function ServiceRequestPageContent() {
               await fetch("/api/as/jobs", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ jobs: loadedJobs }),
+                body: JSON.stringify({ jobs: loadedJobs, full_replace: true }),
               })
             }
           }
@@ -1270,18 +1284,6 @@ function ServiceRequestPageContent() {
 
   useEffect(() => {
     if (!hydrated) return
-    writeJobs(jobs)
-    if (useDb) {
-      void fetch("/api/as/jobs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jobs }),
-      })
-    }
-  }, [jobs, hydrated, useDb])
-
-  useEffect(() => {
-    if (!hydrated) return
     writeStockDispatches(stockDispatches)
     if (useDb) void writeDbBlob(DB_KEYS.stockDispatches, stockDispatches)
   }, [stockDispatches, hydrated])
@@ -1306,6 +1308,22 @@ function ServiceRequestPageContent() {
     if (!hydrated || !useDb) return
     void writeDbBlob(DB_KEYS.seIncomingRequests, seRequests)
   }, [seRequests, hydrated, useDb])
+
+  useEffect(() => {
+    if (!hydrated || seRequests.length === 0) return
+    // Auto-prune SE requests that were already routed to Stock dispatches.
+    const routedIds = new Set(
+      stockDispatches
+        .map((d) => (d.symptom || "").match(/\[SE_REQ:([^\]]+)\]/)?.[1] || "")
+        .filter(Boolean),
+    )
+    if (routedIds.size === 0) return
+    const next = seRequests.filter((r) => !routedIds.has(r.id))
+    if (next.length === seRequests.length) return
+    setSERequests(next)
+    writeIncomingSERequests(next)
+    if (useDb) void writeDbBlob(DB_KEYS.seIncomingRequests, next)
+  }, [hydrated, seRequests, stockDispatches, useDb])
 
   useEffect(() => {
     if (!hydrated) return
@@ -1416,55 +1434,58 @@ function ServiceRequestPageContent() {
 
   function upsertProactiveFromCalibration(job: ServiceJob) {
     if (!job.serial_number?.trim()) return
-    const assets = readProactiveCalibrationAssets([])
-    const key = job.serial_number.trim().toLowerCase()
-    const existing = assets.find((a) => a.serial_number.trim().toLowerCase() === key)
-    // If customer retired/disposed this SN, stop proactive chain.
-    if (existing?.retired_at) return
     const calDate = (job.calibration_date || "").trim()
     if (!calDate) return
-    const dueDate = addOneYear(calDate)
-    const nextRecord: ASProactiveCalibrationAsset = {
-      id: existing?.id || newId("pc-job"),
-      customer_org: existing?.customer_org || job.customer_org || "Unknown",
-      customer_name: existing?.customer_name || job.customer_name || undefined,
-      manufacturer: job.manufacturer || existing?.manufacturer || "—",
-      model: job.model || existing?.model || "—",
+    syncCalibrationBySerial({
       serial_number: job.serial_number,
       last_calibration_date: calDate,
-      due_date: dueDate,
+      due_date: addOneYear(calDate),
+      customer_org: job.customer_org,
+      customer_name: job.customer_name,
+      manufacturer: job.manufacturer,
+      model: job.model,
       note: `Auto-updated from Calibration close (${job.job_no})`,
-      created_at: existing?.created_at || new Date().toISOString(),
-      retired_at: existing?.retired_at,
-      retired_reason: existing?.retired_reason,
+    })
+  }
+
+  function updateJobWithConcurrency(
+    jobId: string,
+    updater: (job: ServiceJob) => ServiceJob,
+  ): ServiceJob | null {
+    for (let i = 0; i < 3; i += 1) {
+      const baseJobs = readJobs([])
+      const expectedVer = readJobsVersion()
+      const current = baseJobs.find((j) => j.id === jobId)
+      if (!current) return null
+      const updated = updater(current)
+      const nextJobs = baseJobs.map((j) => (j.id === jobId ? updated : j))
+      const wr = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
+      if (!wr.ok) continue
+      setJobs(nextJobs)
+      setSelected((prev) => (prev?.id === jobId ? updated : prev))
+      void upsertJobsToDb([updated])
+      return updated
     }
-    const next = existing ? assets.map((a) => (a.id === existing.id ? nextRecord : a)) : [nextRecord, ...assets]
-    writeProactiveCalibrationAssets(next)
+    return null
   }
 
   function applyOfflineQueueNow() {
     const q = readOfflineJobPatches()
     if (q.length === 0) return
     flushOfflineJobPatches((jobId, patch) => {
-      setJobs((prev) =>
-        prev.map((j) =>
-          j.id === jobId
-            ? {
-                ...j,
-                ...patch,
-                status_logs: [
-                  ...(j.status_logs || []),
-                  {
-                    at: new Date().toISOString(),
-                    from: j.status,
-                    to: (patch.status as ServiceJob["status"]) || j.status,
-                    reason: "Flushed from offline queue",
-                  },
-                ],
-              }
-            : j,
-        ),
-      )
+      updateJobWithConcurrency(jobId, (j) => ({
+        ...j,
+        ...patch,
+        status_logs: [
+          ...(j.status_logs || []),
+          {
+            at: new Date().toISOString(),
+            from: j.status,
+            to: (patch.status as ServiceJob["status"]) || j.status,
+            reason: "Flushed from offline queue",
+          },
+        ],
+      }))
     })
     setOfflineQueuedCount(0)
     setOfflineConflictCount(0)
@@ -1480,25 +1501,19 @@ function ServiceRequestPageContent() {
 
   function applyOfflineQueueItem(itemId: string) {
     const ok = applyOfflineJobPatchById(itemId, (jobId, patch) => {
-      setJobs((prev) =>
-        prev.map((j) =>
-          j.id === jobId
-            ? {
-                ...j,
-                ...patch,
-                status_logs: [
-                  ...(j.status_logs || []),
-                  {
-                    at: new Date().toISOString(),
-                    from: j.status,
-                    to: (patch.status as ServiceJob["status"]) || j.status,
-                    reason: "Applied single offline queue item",
-                  },
-                ],
-              }
-            : j,
-        ),
-      )
+      updateJobWithConcurrency(jobId, (j) => ({
+        ...j,
+        ...patch,
+        status_logs: [
+          ...(j.status_logs || []),
+          {
+            at: new Date().toISOString(),
+            from: j.status,
+            to: (patch.status as ServiceJob["status"]) || j.status,
+            reason: "Applied single offline queue item",
+          },
+        ],
+      }))
     })
     if (!ok) return
     const q = readOfflineJobPatches()
@@ -1540,7 +1555,11 @@ function ServiceRequestPageContent() {
     return pending + open
   }, [stockDispatches, jobs])
 
-  const totalIncoming = stockDispatches.length + seRequests.length + repairToCalRequests.length
+  const stockDispatchesFromStockTab = useMemo(
+    () => stockDispatches.filter((d) => d.job_type !== "commissioning"),
+    [stockDispatches],
+  )
+  const totalIncoming = stockDispatchesFromStockTab.length + seRequests.length + repairToCalRequests.length
 
   const filtered = jobs.filter(j => {
     const q = search.toLowerCase()
@@ -1559,9 +1578,7 @@ function ServiceRequestPageContent() {
 
   function updateSelected(patch: Partial<ServiceJob>) {
     if (!selected) return
-    const updated = { ...selected, ...patch }
-    setJobs((prev) => prev.map((j) => (j.id === selected.id ? updated : j)))
-    setSelected(updated)
+    updateJobWithConcurrency(selected.id, (j) => ({ ...j, ...patch }))
   }
 
   function notifyStockJobStatus(job: ServiceJob, toStatus: ServiceJob["status"], reason?: string) {
@@ -1628,8 +1645,7 @@ function ServiceRequestPageContent() {
               { at: new Date().toISOString(), from: job.status, to: "รออะไหล่", reason: `Request parts: ${req.part_name} x${req.qty}` },
             ],
           }
-    setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
-    setSelected(updated)
+    updateJobWithConcurrency(job.id, () => updated)
     setPartsReqPartName("")
     setPartsReqQty(1)
     setPartsReqNote("")
@@ -1647,8 +1663,7 @@ function ServiceRequestPageContent() {
         { at: new Date().toISOString(), from: job.status, to: "ยกเลิก", reason },
       ],
     }
-    setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
-    setSelected(updated)
+    updateJobWithConcurrency(job.id, () => updated)
     if (job.source === "stock") {
       appendStockNotification({
         id: newId("ntf"),
@@ -1708,8 +1723,7 @@ function ServiceRequestPageContent() {
         },
       ],
     }
-    setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
-    setSelected(updated)
+    updateJobWithConcurrency(job.id, () => updated)
     if (job.source === "stock") {
       appendStockNotification({
         id: newId("ntf"),
@@ -1772,6 +1786,7 @@ function ServiceRequestPageContent() {
     const updated: ServiceJob = {
       ...job,
       status: "ยกเลิก",
+      stock_return_pending: job.source === "stock" ? true : job.stock_return_pending,
       cancellation_reason: reason.trim(),
       cancellation_action_plan: actionPlan.trim(),
       status_logs: [
@@ -1784,8 +1799,7 @@ function ServiceRequestPageContent() {
         },
       ],
     }
-    setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)))
-    setSelected(updated)
+    updateJobWithConcurrency(job.id, () => updated)
     notifyStockJobStatus(job, "ยกเลิก", reason.trim())
     appendEquipmentHistory({
       id: newId("eh"),
@@ -1936,6 +1950,7 @@ function ServiceRequestPageContent() {
         if (!wr.ok) continue
         setJobs(nextJobs)
         setSelected(updated)
+        void upsertJobsToDb([updated])
         notifyStockJobStatus(job, nextStatus, nextStatus === "ปิดงาน" ? "Commissioning ผ่าน" : "เริ่มประเมิน")
         return
       }
@@ -1997,6 +2012,7 @@ function ServiceRequestPageContent() {
       if (nextStatus === "ปิดงาน") applyVTOxygenSensorEffectsOnCalibrationClose(updated)
       setJobs(nextJobs)
       setSelected(updated)
+      void upsertJobsToDb([updated])
       notifyStockJobStatus(job, nextStatus, `อัปเดตสถานะตาม Settings flow`)
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         enqueueOfflineJobPatchWithBaseStatus(job.id, { status: nextStatus }, job.status)
@@ -2089,6 +2105,7 @@ function ServiceRequestPageContent() {
         service_job_no: newJob.job_no,
       })
       setJobs(nextJobs)
+      void upsertJobsToDb([newJob])
       setStockDispatches(nextDispatches)
       setSearch("")
       setFilterType("all")
@@ -2140,14 +2157,17 @@ function ServiceRequestPageContent() {
       serial_number: serial || "—",
       customer_org: r.customer_org,
       customer_contact: r.requested_by,
-      symptom: `[From SE] ${r.issue_description}`,
+      symptom: `[From SE][SE_REQ:${r.id}] ${r.issue_description}`,
       receive_channel: "พนักงาน",
       job_type: "repair",
       routing: "in_country",
       dispatched_by: "SE->Stock",
       dispatched_at: new Date().toISOString(),
     })
-    setSERequests((prev) => prev.filter((x) => x.id !== r.id))
+    const nextSeRequests = seRequests.filter((x) => x.id !== r.id)
+    setSERequests(nextSeRequests)
+    writeIncomingSERequests(nextSeRequests)
+    if (useDb) void writeDbBlob(DB_KEYS.seIncomingRequests, nextSeRequests)
     removeIncomingSERequest(r.id)
     const orgs = readOrganizations([])
     writeOrganizations(upsertOrganizationByName(orgs, r.customer_org, r.requested_by))
@@ -2220,6 +2240,7 @@ function ServiceRequestPageContent() {
       const wr = writeJobsWithConcurrencyCheck(nextJobs, expectedVer)
       if (!wr.ok) continue
       setJobs(nextJobs)
+      void upsertJobsToDb([newJob])
       setRepairToCalRequests((prev) => prev.filter((r) => r.id !== req.id))
       removeRepairToCalRequest(req.id)
       setSearch("")
@@ -2306,7 +2327,7 @@ function ServiceRequestPageContent() {
   const MAIN_TABS: { id: MainTab; label: string; badge?: number }[] = [
     { id: "jobs", label: "งานทั้งหมด" },
     { id: "commissioning", label: "Commissioning Test", badge: commissioningTabBadge },
-    { id: "from_stock", label: "รับงานจาก Stock", badge: stockDispatches.length },
+    { id: "from_stock", label: "รับงานจาก Stock", badge: stockDispatchesFromStockTab.length },
     { id: "from_se", label: "คำขอจาก SE", badge: seRequests.length },
     { id: "from_repair_cal", label: "คำขอ Cal จาก Repair", badge: repairToCalRequests.length },
   ]
@@ -2345,10 +2366,10 @@ function ServiceRequestPageContent() {
             {totalIncoming > 0 && (
               <>
                 มีงานใหม่รอรับ:
-                {stockDispatches.length > 0 && <span className="text-orange-600">{stockDispatches.length} งานจาก Stock</span>}
-                {stockDispatches.length > 0 && seRequests.length > 0 && " · "}
+                {stockDispatchesFromStockTab.length > 0 && <span className="text-orange-600">{stockDispatchesFromStockTab.length} งานจาก Stock</span>}
+                {stockDispatchesFromStockTab.length > 0 && seRequests.length > 0 && " · "}
                 {seRequests.length > 0 && <span className="text-violet-600">{seRequests.length} คำขอจาก SE</span>}
-                {(stockDispatches.length > 0 || seRequests.length > 0) && repairToCalRequests.length > 0 && " · "}
+                {(stockDispatchesFromStockTab.length > 0 || seRequests.length > 0) && repairToCalRequests.length > 0 && " · "}
                 {repairToCalRequests.length > 0 && <span className="text-emerald-600">{repairToCalRequests.length} คำขอ Cal จาก Repair</span>}
               </>
             )}
@@ -2366,7 +2387,7 @@ function ServiceRequestPageContent() {
             {calibrationAlertCount > 0 && <span className="text-teal-600">{calibrationAlertCount} Calibration แจ้งเตือน</span>}
           </p>
           <div className="flex gap-2 shrink-0">
-            {stockDispatches.length > 0 && (
+            {stockDispatchesFromStockTab.length > 0 && (
               <button onClick={() => setMainTab("from_stock")} className="px-3 py-1.5 rounded-xl bg-orange-500 text-white text-xs font-bold hover:bg-orange-600 transition-colors">
                 ดูงาน Stock
               </button>
@@ -3142,6 +3163,12 @@ function ServiceRequestPageContent() {
                           }
                           const live = readJobs([])
                           const updated = live.find((j) => j.id === sel.id) || null
+                          if (updated && (updated.job_type === "calibration" || updated.job_type === "preventive_maintenance") && updated.status === "ปิดงาน") {
+                            upsertProactiveFromCalibration(updated)
+                          }
+                          if (updated) {
+                            void upsertJobsToDb([updated])
+                          }
                           setJobs(live)
                           setSelected(updated)
                         }}
@@ -3313,7 +3340,7 @@ function ServiceRequestPageContent() {
       {/* ── Tab: From Stock ── */}
       {mainTab === "from_stock" && (
         <div className="flex-1 overflow-y-auto">
-          <FromStockTab dispatches={stockDispatches} onAccept={acceptStockDispatch} />
+          <FromStockTab dispatches={stockDispatchesFromStockTab} onAccept={acceptStockDispatch} />
         </div>
       )}
 

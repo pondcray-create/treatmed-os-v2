@@ -6,6 +6,17 @@ export function getReceiveModuleSpec(model: string): {
   componentLabels: string[]
 } {
   const m = model.trim()
+  const normalized = m.replace(/\s+/g, "")
+  const ida6Match =
+    normalized.match(/IDA6(?:[-_/]?)([1-4])(?:CH)?/i) ||
+    normalized.match(/IDA6(?:CH)?(?:[-_/]?)([1-4])/i)
+  if (ida6Match) {
+    const count = Number(ida6Match[1] || "4")
+    return {
+      mainLabel: "Serial จอ (Display)",
+      componentLabels: Array.from({ length: count }, (_, idx) => `Module ${idx + 1}`),
+    }
+  }
   if (/IDA6/i.test(m)) {
     return {
       mainLabel: "Serial จอ (Display)",

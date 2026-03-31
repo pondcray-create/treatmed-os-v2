@@ -54,6 +54,7 @@ type StockCustomerEquipment = {
   serial_number?: string
   sold_to_org?: string
   sold_at?: string
+  sold_customer_po?: string
   status?: string
   last_calibration_date?: string
   calibration_due_date?: string
@@ -62,6 +63,17 @@ type StockCustomerEquipment = {
 // ─── Badge ────────────────────────────────────────────────────────────────────
 function Pill({ children, color }: { children: React.ReactNode; color: string }) {
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${color}`}>{children}</span>
+}
+
+function isIsoDateLike(v?: string): boolean {
+  if (!v) return false
+  return /^\d{4}-\d{2}-\d{2}/.test(v)
+}
+
+function isLaterDate(next?: string, current?: string): boolean {
+  if (!next) return false
+  if (!current) return true
+  return next > current
 }
 
 // ─── Org Card ─────────────────────────────────────────────────────────────────
@@ -625,6 +637,11 @@ export default function CustomersPage() {
         lastCalibrationDate?: string
         dueDate?: string
         lifecycle: "active" | "retired"
+        soldAt?: string
+        soldPo?: string
+        lastJobNo?: string
+        lastAction?: string
+        nextAction?: string
       }
     >()
 
@@ -645,6 +662,9 @@ export default function CustomersPage() {
         lastCalibrationDate: item.last_calibration_date,
         dueDate: item.calibration_due_date,
         lifecycle: serial && proactiveBySn.get(serial.toLowerCase())?.retired_at ? "retired" : "active",
+        soldAt: item.sold_at,
+        soldPo: item.sold_customer_po,
+        lastAction: item.sold_at ? `ขายให้ลูกค้า${item.sold_customer_po ? ` (PO ${item.sold_customer_po})` : ""}` : "รับเข้า/ลงทะเบียนใน Stock",
       })
     }
 
@@ -667,26 +687,60 @@ export default function CustomersPage() {
           lastCalibrationDate: job.calibration_date,
           dueDate: job.due_date,
           lifecycle: serial && proactiveBySn.get(serial.toLowerCase())?.retired_at ? "retired" : "active",
+          lastJobNo: job.job_no,
+          lastAction: `${job.job_type === "calibration" ? "สอบเทียบ" : job.job_type === "repair" ? "ซ่อม" : "งานบริการ"} · ${job.status}`,
         })
         continue
       }
-      const nextLastSeenAt = (job.created_at || job.received_date || "") > exists.lastSeenAt ? (job.created_at || job.received_date || "") : exists.lastSeenAt
+      const candidateSeenAt = job.created_at || job.received_date || ""
+      const nextLastSeenAt = candidateSeenAt > exists.lastSeenAt ? candidateSeenAt : exists.lastSeenAt
+      const nextLastCalibrationDate = isLaterDate(job.calibration_date, exists.lastCalibrationDate)
+        ? job.calibration_date
+        : exists.lastCalibrationDate
+      const nextDueDate = isLaterDate(job.due_date, exists.dueDate) ? job.due_date : exists.dueDate
       byKey.set(key, {
         ...exists,
         source: exists.source === "stock" ? "both" : exists.source,
-        lastStatus: nextLastSeenAt === (job.created_at || job.received_date || "") ? job.status : exists.lastStatus,
+        lastStatus: nextLastSeenAt === candidateSeenAt ? job.status : exists.lastStatus,
         lastSeenAt: nextLastSeenAt,
         jobsCount: exists.jobsCount + 1,
-        lastCalibrationDate: exists.lastCalibrationDate || job.calibration_date,
-        dueDate: exists.dueDate || job.due_date,
+        lastCalibrationDate: nextLastCalibrationDate,
+        dueDate: nextDueDate,
         lifecycle:
           exists.lifecycle === "retired" || (serial && proactiveBySn.get(serial.toLowerCase())?.retired_at)
             ? "retired"
             : "active",
+        lastJobNo: nextLastSeenAt === candidateSeenAt ? job.job_no : exists.lastJobNo,
+        lastAction:
+          nextLastSeenAt === candidateSeenAt
+            ? `${job.job_type === "calibration" ? "สอบเทียบ" : job.job_type === "repair" ? "ซ่อม" : "งานบริการ"} · ${job.status}`
+            : exists.lastAction,
       })
     }
 
-    return Array.from(byKey.values()).sort((a, b) => {
+    const withPlan = Array.from(byKey.values()).map((eq) => {
+      const proactive = eq.serial !== "—" ? proactiveBySn.get(eq.serial.toLowerCase()) : undefined
+      const due = proactive?.due_date || eq.dueDate
+      const lastCal = proactive?.last_calibration_date || eq.lastCalibrationDate
+      let nextAction = "ติดตามเชิงพาณิชย์/ใช้งานหน้างาน"
+      if (eq.lifecycle === "retired") {
+        nextAction = "หยุด proactive (เครื่อง retired/disposed)"
+      } else if (due && isIsoDateLike(due)) {
+        nextAction = `นัดสอบเทียบก่อน ${formatThDateFromYMD(due)}`
+      } else if ((eq.lastStatus || "").includes("ยกเลิก")) {
+        nextAction = "ทบทวน Action Plan งานยกเลิก"
+      } else if ((eq.lastStatus || "") !== "ปิดงาน" && (eq.lastStatus || "") !== "sold") {
+        nextAction = `ติดตามงานล่าสุด (${eq.lastStatus || "กำลังดำเนินการ"})`
+      }
+      return {
+        ...eq,
+        dueDate: due,
+        lastCalibrationDate: lastCal,
+        nextAction,
+      }
+    })
+
+    return withPlan.sort((a, b) => {
       if (a.serial === "—" && b.serial !== "—") return 1
       if (a.serial !== "—" && b.serial === "—") return -1
       return a.model.localeCompare(b.model, "th")
@@ -854,16 +908,19 @@ export default function CustomersPage() {
                 <p className="text-sm text-gray-400 mt-4">ยังไม่พบข้อมูลเครื่องของลูกค้ารายนี้</p>
               ) : (
                 <div className="mt-4 overflow-x-auto">
-                  <table className="w-full min-w-[880px] text-sm">
+                  <table className="w-full min-w-[1180px] text-sm">
                     <thead>
                       <tr className="text-left text-gray-500 border-b border-gray-100">
                         <th className="py-2 pr-3 font-semibold">Model</th>
                         <th className="py-2 pr-3 font-semibold">Manufacturer</th>
                         <th className="py-2 pr-3 font-semibold">SN</th>
+                        <th className="py-2 pr-3 font-semibold">ซื้อเมื่อ/PO</th>
                         <th className="py-2 pr-3 font-semibold">Source</th>
                         <th className="py-2 pr-3 font-semibold">สถานะล่าสุด</th>
+                        <th className="py-2 pr-3 font-semibold">ทำอะไรล่าสุด</th>
                         <th className="py-2 pr-3 font-semibold">Last Cal</th>
                         <th className="py-2 pr-3 font-semibold">Due</th>
+                        <th className="py-2 pr-3 font-semibold">ต้องทำต่อ</th>
                         <th className="py-2 pr-3 font-semibold">Lifecycle</th>
                         <th className="py-2 pr-0 font-semibold">จำนวนงาน</th>
                       </tr>
@@ -874,6 +931,10 @@ export default function CustomersPage() {
                           <td className="py-2 pr-3 font-semibold text-gray-900">{eq.model}</td>
                           <td className="py-2 pr-3 text-gray-700">{eq.manufacturer}</td>
                           <td className="py-2 pr-3 font-mono text-blue-700">{eq.serial}</td>
+                          <td className="py-2 pr-3 text-[11px] leading-tight text-gray-700">
+                            <p>{eq.soldAt ? formatThDateFromYMD(eq.soldAt) : "—"}</p>
+                            <p className="font-mono text-gray-500">{eq.soldPo ? `PO ${eq.soldPo}` : "—"}</p>
+                          </td>
                           <td className="py-2 pr-3">
                             <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
                               eq.source === "both"
@@ -886,12 +947,17 @@ export default function CustomersPage() {
                             </span>
                           </td>
                           <td className="py-2 pr-3 text-gray-700">{eq.lastStatus || "—"}</td>
+                          <td className="py-2 pr-3 text-[11px] text-gray-700">
+                            <p>{eq.lastAction || "—"}</p>
+                            <p className="font-mono text-gray-400">{eq.lastJobNo || "—"}</p>
+                          </td>
                           <td className="py-2 pr-3 text-[11px] text-gray-700 leading-tight">
                             {eq.lastCalibrationDate ? formatThDateFromYMD(eq.lastCalibrationDate) : "—"}
                           </td>
                           <td className="py-2 pr-3 text-[11px] text-gray-700 leading-tight">
                             {eq.dueDate ? formatThDateFromYMD(eq.dueDate) : "—"}
                           </td>
+                          <td className="py-2 pr-3 text-[11px] font-medium text-indigo-700">{eq.nextAction || "—"}</td>
                           <td className="py-2 pr-3">
                             <span className={`px-2 py-1 rounded-full text-xs font-semibold ${eq.lifecycle === "retired" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                               {eq.lifecycle === "retired" ? "Retired" : "Active"}

@@ -41,6 +41,7 @@ import {
   readOrganizations,
   readDropdownConfig,
   readProductCatalog,
+  syncCalibrationBySerial,
   upsertOrganizationByName,
   writeOrganizations,
   readProactiveCalibrationAssets,
@@ -93,7 +94,7 @@ import { getReceiveModuleSpec } from "@/lib/receive-module-spec"
 import { Badge } from "@/components/ui/badge"
 
 type StockCategory = "spare_part" | "module" | "sellable" | "consumable" | "tool" | "demo"
-type ItemStatus = "in_stock" | "reserved" | "on_loan" | "sold" | "pending_qc"
+type ItemStatus = "in_stock" | "reserved" | "on_loan" | "sold" | "pending_qc" | "in_service"
 type Tab = "all" | "booking" | "claim" | "sold_history" | "loan" | "demo" | "service_history"
 type ServiceJobTypeFilter = "all" | ASServiceJob["job_type"]
 /** เรียงลำดับในตาราง All Stock — ไม่บังคับ "เก่าก่อน" ค่าเริ่มต้นเป็นตามลำดับในระบบ */
@@ -276,7 +277,8 @@ const CAT_ICONS: Record<StockCategory, React.ReactNode> = {
 const STATUS_COLORS: Record<ItemStatus, string> = {
   in_stock: "bg-emerald-100 text-emerald-700", reserved: "bg-orange-100 text-orange-700",
   on_loan: "bg-blue-100 text-blue-700", sold: "bg-gray-100 text-gray-400",
-  pending_qc: "bg-amber-100 text-amber-800"
+  pending_qc: "bg-amber-100 text-amber-800",
+  in_service: "bg-indigo-100 text-indigo-700",
 }
 const STATUS_LABELS: Record<ItemStatus, string> = {
   in_stock: "In Stock",
@@ -284,6 +286,7 @@ const STATUS_LABELS: Record<ItemStatus, string> = {
   on_loan: "On Loan",
   sold: "Sold",
   pending_qc: "Pending QC",
+  in_service: "In Service",
 }
 
 const MOCK_ITEMS: StockItem[] = [
@@ -2120,6 +2123,19 @@ export default function StockPage() {
     }
   }
 
+  async function upsertJobsToDb(patchJobs: ASServiceJob[]) {
+    if (!useDb || patchJobs.length === 0) return
+    try {
+      await fetch("/api/as/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobs: patchJobs }),
+      })
+    } catch {
+      // best-effort mirror during pilot
+    }
+  }
+
   const lowStock = items.filter(i => i.qty < i.min_qty && i.status === "in_stock")
   const demoOnLoan = items.filter(i => i.category === "demo" && i.status === "on_loan")
   const stockOnLoan = items.filter((i) => i.status === "on_loan")
@@ -2281,13 +2297,15 @@ export default function StockPage() {
       setPendingStockReturns(
         jobs.filter(
           (j) =>
-            j.status === "ปิดงาน" &&
+            j.source === "stock" &&
+            (j.status === "ปิดงาน" || j.status === "ยกเลิก") &&
+            !j.stock_return_received_at &&
             j.stock_return_pending,
         ),
       )
       setDispatchAcceptedHistory(readStockDispatchHistory([]))
       setOutboundTraceLog(readStockOutboundTraceLog([]))
-      setCompletedStockReturns(jobs.filter((j) => j.stock_return_received_at))
+      setCompletedStockReturns(jobs.filter((j) => j.source === "stock" && j.stock_return_received_at))
       setPendingInServiceInbox(dispatches.length)
       setLoanReturnHistory(readLoanReturnHistory([]))
       setModuleAssignments(readModuleAssignments([]))
@@ -2371,6 +2389,13 @@ export default function StockPage() {
     writeStockTransactionsLedger(transactions)
     if (useDb) void writeDbBlob(DB_KEYS.stockTransactions, transactions)
   }, [transactions, useDb])
+
+  useEffect(() => {
+    if (!transactionsHydratedRef.current) return
+    // Self-heal proactive registry from input-product inbound transactions.
+    // This keeps Proactive consistent even when users navigate quickly across pages.
+    transactions.forEach((tx) => upsertProactiveCalibrationFromInputProduct(tx))
+  }, [transactions])
 
   useEffect(() => {
     if (!bookingsHydratedRef.current) return
@@ -2738,6 +2763,9 @@ export default function StockPage() {
   }
 
   function handleDispatch(form: DispatchForm) {
+    setItems((prev) =>
+      prev.map((i) => (i.id === form.item.id ? { ...i, status: "in_service" as const } : i)),
+    )
     appendStockDispatch({
       id: newId("sd"),
       item_name: form.item.name,
@@ -2768,6 +2796,7 @@ export default function StockPage() {
   /** Service ปิดงานแล้ว — Stock ยืนยันรับเข้าคลังเพื่อสถานะพร้อมจำหน่าย */
   function acceptStockReturn(job: ASServiceJob) {
     const receivedAt = new Date().toISOString()
+    const isCancelledReturn = job.status === "ยกเลิก"
     const currentItemsForTrace = tryReadJSON<StockItem[]>(AS_STORE_KEYS.stockItems) ?? []
     const preMatchedItem = currentItemsForTrace.find((it) => {
       const byId = Boolean(job.stock_item_id && it.id === job.stock_item_id)
@@ -2807,13 +2836,17 @@ export default function StockPage() {
             ...j,
             stock_return_pending: false,
             stock_return_received_at: receivedAt,
+            stock_outbound_trace_archived: true,
+            stock_outbound_trace_archived_at: receivedAt,
             status_logs: [
               ...(j.status_logs || []),
               {
                 at: receivedAt,
                 from: j.status,
                 to: j.status,
-                reason: `Stock ยืนยันรับเข้าคลัง — พร้อมจำหน่าย (${preMatchStrategy})`,
+                reason: isCancelledReturn
+                  ? `Stock รับคืนงานยกเลิก — Incomplete (${preMatchStrategy})`
+                  : `Stock ยืนยันรับเข้าคลัง — พร้อมจำหน่าย (${preMatchStrategy})`,
               },
             ],
           }
@@ -2828,6 +2861,19 @@ export default function StockPage() {
       return
     }
     jobsVersionRef.current = nextVersion
+    appendStockOutboundTraceLog({
+      id: newId("ot"),
+      close_kind: "OUTBOUND_TRACE_COMPLETED",
+      recorded_at: receivedAt,
+      service_job_id: job.id,
+      service_job_no: job.job_no,
+      workstream_job_type: job.job_type,
+      serial_number: job.serial_number,
+      model: job.model,
+      customer_org: job.customer_org,
+      service_status_at_action: "ปิดงาน",
+      completion_note: "Auto-archived after Stock receive",
+    })
     // Update stock atomically; if no linked item exists, recreate minimal in-stock item
     // to avoid "ปิดงานแล้วหาไม่เจอใน Stock" for older/missing linkage jobs.
     for (let i = 0; i < 3; i += 1) {
@@ -2905,6 +2951,7 @@ export default function StockPage() {
         .filter((j) => j.status !== "ปิดงาน" || j.stock_return_pending),
     )
     const updatedJob = nextJobs.find((j) => j.id === job.id)
+    if (updatedJob) void upsertJobsToDb([updatedJob])
     if (updatedJob?.stock_return_received_at) {
       setCompletedStockReturns((p) => [updatedJob, ...p.filter((x) => x.id !== job.id)])
     }
@@ -2931,7 +2978,7 @@ export default function StockPage() {
     const now = new Date().toISOString()
     const expectedVer = jobsVersionRef.current
     const all = readJobs([])
-    const next = all.map((j) =>
+    const next: ASServiceJob[] = all.map((j) =>
       j.id !== job.id
         ? j
         : {
@@ -2952,7 +2999,7 @@ export default function StockPage() {
             ],
           },
     )
-    const w1 = writeJobsWithConcurrencyCheck(next as ASServiceJob[], expectedVer)
+    const w1 = writeJobsWithConcurrencyCheck(next, expectedVer)
     if (!w1.ok) {
       jobsVersionRef.current = readJobsVersion()
       window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: AS_STORE_KEYS.jobs } }))
@@ -2961,6 +3008,8 @@ export default function StockPage() {
       return
     }
     jobsVersionRef.current = w1.nextVersion
+    const updatedJob = next.find((j) => j.id === job.id)
+    if (updatedJob) void upsertJobsToDb([updatedJob])
     appendStockOutboundTraceLog({
       id: newId("sot"),
       close_kind: "OUTBOUND_TRACE_CANCELLED",
@@ -2992,7 +3041,7 @@ export default function StockPage() {
     const now = new Date().toISOString()
     const expectedVer = jobsVersionRef.current
     const all = readJobs([])
-    const next = all.map((j) =>
+    const next: ASServiceJob[] = all.map((j) =>
       j.id !== job.id
         ? j
         : {
@@ -3019,6 +3068,8 @@ export default function StockPage() {
       return
     }
     jobsVersionRef.current = w2.nextVersion
+    const updatedJob = next.find((j) => j.id === job.id)
+    if (updatedJob) void upsertJobsToDb([updatedJob])
     appendStockOutboundTraceLog({
       id: newId("sot"),
       close_kind: "OUTBOUND_TRACE_COMPLETED",
@@ -3299,11 +3350,19 @@ export default function StockPage() {
     }
     if (action === "make_demo") {
       if (item.category === "demo") return
-      if (!window.confirm("ตั้งประเภทรายการนี้เป็น Demo Unit? (ยังไม่เปลี่ยนสถานะ In Stock / Loan)")) return
+      if (item.status !== "in_stock" && item.status !== "reserved") return
+      if (!window.confirm("ตั้งประเภทรายการนี้เป็น Demo Unit?")) return
       setItems((p) =>
         p.map((i) =>
           i.id === item.id
-            ? { ...i, category: "demo" as StockCategory, loan_approval_status: undefined, loan_approval_note: undefined }
+            ? {
+                ...i,
+                category: "demo" as StockCategory,
+                loan_approval_status: undefined,
+                loan_approval_note: undefined,
+                loan_approved_at: undefined,
+                loan_approved_by: undefined,
+              }
             : i,
         ),
       )
@@ -3369,25 +3428,16 @@ export default function StockPage() {
       ),
     )
     if (item.serial_number) {
-      const assets = readProactiveCalibrationAssets([])
-      const key = item.serial_number.trim().toLowerCase()
-      const existing = assets.find((a) => a.serial_number.trim().toLowerCase() === key)
-      const nextRecord: ASProactiveCalibrationAsset = {
-        id: existing?.id || newId("pc-upd"),
-        customer_org: existing?.customer_org || item.sold_to_org || PROACTIVE_ORG_STOCK_INBOUND,
-        customer_name: existing?.customer_name || item.sold_contact || undefined,
-        manufacturer: item.brand,
-        model: item.model || item.name,
+      syncCalibrationBySerial({
         serial_number: item.serial_number,
         last_calibration_date: lastCalibrationDate,
         due_date: due,
+        customer_org: item.sold_to_org || PROACTIVE_ORG_STOCK_INBOUND,
+        customer_name: item.sold_contact || undefined,
+        manufacturer: item.brand,
+        model: item.model || item.name,
         note: "Updated from Stock: Calibration returned from lab",
-        created_at: existing?.created_at || new Date().toISOString(),
-      }
-      const nextAssets = existing
-        ? assets.map((a) => (a.id === existing.id ? nextRecord : a))
-        : [nextRecord, ...assets]
-      writeProactiveCalibrationAssets(nextAssets)
+      })
     }
     setCalibrationUpdateItem(null)
     setDispatchSuccess(`Updated calibration for ${item.serial_number || item.name} (Next Due: ${due})`)
@@ -3454,7 +3504,7 @@ export default function StockPage() {
     OUTBOUND_TRACE_CANCELLED: "Outbound trace cancelled",
   }
 
-  const demoStockCount = items.filter((i) => i.category === "demo").length
+  const demoStockCount = items.filter((i) => i.category === "demo" && i.status !== "sold").length
 
   const stockTabHeroes: {
     id: Tab
@@ -3765,6 +3815,16 @@ export default function StockPage() {
                   <p className="text-sm font-semibold text-gray-900 truncate">{job.model}</p>
                   <p className="text-xs text-gray-500 font-mono">SN: {job.serial_number}</p>
                   <p className="text-xs text-gray-600 mt-0.5">{job.customer_org}</p>
+                  {job.status === "ยกเลิก" && (
+                    <p className="text-[11px] text-rose-700 mt-1 font-semibold">
+                      Status: Incomplete (Cancelled from Service)
+                    </p>
+                  )}
+                  {job.cancellation_action_plan && (
+                    <p className="text-[11px] text-amber-800 mt-1">
+                      Action plan: {job.cancellation_action_plan}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -4249,6 +4309,18 @@ export default function StockPage() {
                                   className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-orange-800 hover:bg-orange-50"
                                 >
                                   Create Booking
+                                </button>
+                              )}
+                              {(item.status === "in_stock" || item.status === "reserved") && item.category !== "demo" && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleQuickAction(item, "make_demo")
+                                  }}
+                                  className="w-full text-left px-3 py-2 rounded-lg text-sm font-semibold text-violet-800 hover:bg-violet-50"
+                                >
+                                  Convert to Demo
                                 </button>
                               )}
                                 </>
@@ -4986,7 +5058,7 @@ export default function StockPage() {
                   <Pill label="In Stock" color={STATUS_COLORS.in_stock} />
                 </div>
               ))}
-              {items.filter(i=>i.category==="demo").length === 0 && (
+              {items.filter(i=>i.category==="demo" && i.status !== "sold").length === 0 && (
                 <p className="text-gray-400 text-sm col-span-3 py-8 text-center">ยังไม่มี Demo Unit</p>
               )}
             </div>

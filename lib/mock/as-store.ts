@@ -563,7 +563,7 @@ export interface SEServiceRequestStored {
   deal_title: string
   /** ผูกดีลเพื่อ Activity / รายงาน */
   deal_id?: string
-  request_type: "installation" | "training" | "maintenance" | "consultation"
+  request_type: "repair" | "calibration" | "training" | "installation" | "maintenance" | "consultation"
   description: string
   status: "pending" | "scheduled" | "completed" | "cancelled"
   scheduled_date: string
@@ -1026,11 +1026,67 @@ export function writeJobsWithConcurrencyCheck(
 }
 
 export function readOrganizations(fallback: ASOrganization[]) {
+  hydrateOrganizationsFromDb()
   return readStore<ASOrganization[]>(KEYS.orgs, fallback)
+}
+
+let orgMirrorTimer: number | null = null
+let lastMirroredOrgsPayload = ""
+let orgDbHydrationStarted = false
+let orgDbHydrationDone = false
+
+function hydrateOrganizationsFromDb() {
+  if (!hasWindow() || orgDbHydrationStarted || orgDbHydrationDone) return
+  orgDbHydrationStarted = true
+  void fetch("/api/as/organizations")
+    .then(async (res) => {
+      if (!res.ok) return
+      const fromDb = (await res.json()) as ASOrganization[]
+      if (!Array.isArray(fromDb)) return
+      const nextPayload = JSON.stringify({ orgs: fromDb })
+      lastMirroredOrgsPayload = nextPayload
+      writeStore(KEYS.orgs, fromDb)
+      orgDbHydrationDone = true
+      window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: KEYS.orgs } }))
+    })
+    .catch(() => {
+      // keep local fallback
+    })
+    .finally(() => {
+      orgDbHydrationStarted = false
+    })
+}
+
+function scheduleOrganizationsDbMirror(orgs: ASOrganization[]) {
+  if (!hasWindow()) return
+  const payload = JSON.stringify({ orgs })
+  if (payload === lastMirroredOrgsPayload) return
+  lastMirroredOrgsPayload = payload
+  if (orgMirrorTimer) window.clearTimeout(orgMirrorTimer)
+  orgMirrorTimer = window.setTimeout(() => {
+    void fetch("/api/as/organizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    })
+      .then(async (res) => {
+        if (!res.ok) return
+        const json = (await res.json()) as { ok?: boolean; orgs?: ASOrganization[] }
+        if (!json?.ok || !Array.isArray(json.orgs)) return
+        const canonicalPayload = JSON.stringify({ orgs: json.orgs })
+        lastMirroredOrgsPayload = canonicalPayload
+        writeStore(KEYS.orgs, json.orgs)
+        window.dispatchEvent(new CustomEvent("as-store-updated", { detail: { key: KEYS.orgs } }))
+      })
+      .catch(() => {
+        // best-effort mirror during pilot
+      })
+  }, 180)
 }
 
 export function writeOrganizations(value: ASOrganization[]) {
   writeStore(KEYS.orgs, value)
+  scheduleOrganizationsDbMirror(value)
 }
 
 /** Synthetic org names from Stock / proactive / commissioning (`customer_org`). Keep in store for jobs; hide on ทะเบียนลูกค้า. */
@@ -1298,6 +1354,68 @@ export function readProactiveCalibrationAssets(fallback: ASProactiveCalibrationA
 
 export function writeProactiveCalibrationAssets(value: ASProactiveCalibrationAsset[]) {
   writeStore(KEYS.proactiveCalibrationAssets, value)
+}
+
+function addOneYearYmd(ymd: string): string {
+  const dt = new Date(`${ymd}T00:00:00.000Z`)
+  if (Number.isNaN(dt.getTime())) return ymd
+  dt.setUTCFullYear(dt.getUTCFullYear() + 1)
+  return dt.toISOString().slice(0, 10)
+}
+
+export function syncCalibrationBySerial(params: {
+  serial_number: string
+  last_calibration_date: string
+  due_date?: string
+  customer_org?: string
+  customer_name?: string
+  manufacturer?: string
+  model?: string
+  note?: string
+}) {
+  const serial = params.serial_number.trim()
+  const cal = params.last_calibration_date.trim().slice(0, 10)
+  if (!serial || !cal) return
+  const due = (params.due_date || addOneYearYmd(cal)).trim().slice(0, 10)
+  const snKey = serial.toLowerCase()
+
+  const stockRows = readStore<Record<string, unknown>[]>(KEYS.stockItems, [])
+  let stockTouched = false
+  const nextStockRows = stockRows.map((row) => {
+    const rowSn = String(row.serial_number || "").trim().toLowerCase()
+    if (!rowSn || rowSn !== snKey) return row
+    stockTouched = true
+    return {
+      ...row,
+      last_calibration_date: cal,
+      calibration_due_date: due,
+    }
+  })
+  if (stockTouched) {
+    writeStore(KEYS.stockItems, nextStockRows)
+  }
+
+  const assets = readProactiveCalibrationAssets([])
+  const existing = assets.find((a) => a.serial_number.trim().toLowerCase() === snKey)
+  if (!existing && !params.manufacturer?.trim() && !params.model?.trim()) {
+    return
+  }
+  const nextAsset: ASProactiveCalibrationAsset = {
+    id: existing?.id || newId("pc-sync"),
+    customer_org: params.customer_org?.trim() || existing?.customer_org || "Unknown",
+    customer_name: params.customer_name?.trim() || existing?.customer_name || undefined,
+    manufacturer: params.manufacturer?.trim() || existing?.manufacturer || "—",
+    model: params.model?.trim() || existing?.model || "—",
+    serial_number: serial,
+    last_calibration_date: cal,
+    due_date: due,
+    note: params.note || existing?.note || "Synced calibration baseline",
+    created_at: existing?.created_at || new Date().toISOString(),
+    retired_at: existing?.retired_at,
+    retired_reason: existing?.retired_reason,
+  }
+  const nextAssets = existing ? assets.map((a) => (a.id === existing.id ? nextAsset : a)) : [nextAsset, ...assets]
+  writeProactiveCalibrationAssets(nextAssets)
 }
 
 export function readDropdownConfig(fallback: ASDropdownConfig = DEFAULT_AS_DROPDOWN_CONFIG) {

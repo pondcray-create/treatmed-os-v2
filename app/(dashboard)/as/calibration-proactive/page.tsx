@@ -11,6 +11,7 @@ import {
   readDropdownConfig,
   readProductCatalog,
   readProactiveCalibrationAssets,
+  syncCalibrationBySerial,
   upsertOrganizationByName,
   writeJobs,
   writeOrganizations,
@@ -55,6 +56,7 @@ const SEED_ASSETS: ASProactiveCalibrationAsset[] = [
 
 export default function CalibrationProactivePage() {
   const useDevSeed = false
+  const useDb = true
   const [assets, setAssets] = useState<ASProactiveCalibrationAsset[]>([])
   const [jobs, setJobs] = useState<ASServiceJob[]>([])
   const [search, setSearch] = useState("")
@@ -114,6 +116,19 @@ export default function CalibrationProactivePage() {
     writeProactiveCalibrationAssets(assets)
   }, [assets])
 
+  async function upsertJobsToDb(patchJobs: ASServiceJob[]) {
+    if (!useDb || patchJobs.length === 0) return
+    try {
+      await fetch("/api/as/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobs: patchJobs }),
+      })
+    } catch {
+      // best-effort mirror during pilot
+    }
+  }
+
   const manufacturerOptions = useMemo(
     () => getStockPatternManufacturers(productCatalog, stockDropdownConfig),
     [productCatalog, stockDropdownConfig],
@@ -157,6 +172,18 @@ export default function CalibrationProactivePage() {
       created_at: today,
     }
     setAssets((prev) => [next, ...prev])
+    if (next.last_calibration_date) {
+      syncCalibrationBySerial({
+        serial_number: next.serial_number,
+        last_calibration_date: next.last_calibration_date,
+        due_date: next.due_date,
+        customer_org: next.customer_org,
+        customer_name: next.customer_name,
+        manufacturer: next.manufacturer,
+        model: next.model,
+        note: "Updated from Proactive form",
+      })
+    }
     setForm({
       customer_org: "",
       customer_name: "",
@@ -206,6 +233,7 @@ export default function CalibrationProactivePage() {
       created_at: todayISO,
     }
     writeJobs([job, ...liveJobs])
+    void upsertJobsToDb([job])
     setAssets((prev) => [...prev])
 
     const orgs = readOrganizations([])
